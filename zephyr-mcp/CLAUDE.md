@@ -148,6 +148,18 @@ Email не требуется и нигде не используется.
    README.md
    ```
 
+6. **Запуск через uvx (без Docker).** entry point `zephyr-mcp`
+   (`[project.scripts]`) запускается через
+   `uvx --from git+<repo>#subdirectory=zephyr-mcp zephyr-mcp`. Папка `install/`
+   содержит установочные скрипты для сотрудников (`setup.sh` macOS arm64 +
+   Linux, `setup.ps1` Windows) — зеркало `outlook-mcp/install/`: находят/ставят
+   `uv`, пишут `.env` (chmod 600, каталог `~/.config/zephyr-mcp`), идемпотентно
+   обновляют секцию `zephyr-scale` в `cline_mcp_settings.json`, спрашивают 2
+   переменные (`ZEPHYR_BASE_URL` видимо, `ZEPHYR_API_TOKEN` скрыто). **`main()`
+   в `__main__.py` перехватывает `--help`/`-h` ДО `load_config()`** — иначе
+   `SystemExit` об отсутствии env не дал бы вывести справку; это лёгкая
+   самопроверка для install-скриптов.
+
 5. Конфиг для подключения через Cline (VS Code) — `cline_mcp_settings.json` (см. README):
    ```json
    {

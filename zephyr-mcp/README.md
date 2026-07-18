@@ -2,7 +2,26 @@
 
 MCP-сервер (stdio) для Zephyr Scale (Adaptavist Test Management, ATM) на self-hosted Jira Server/DC.
 
-## Сборка
+Запускается через `uvx` (рекомендуется для сотрудников) или в Docker.
+
+## Установка для сотрудников (uvx, без Docker)
+
+Готовые установочные скрипты в [install/](install/) — под Windows, macOS
+(Apple Silicon) и Linux. Скрипт находит/ставит `uv`, спрашивает креды,
+сохраняет `.env` и прописывает сервер в Cline идемпотентно. Инструкция —
+[install/README.md](install/README.md).
+
+Запуск сервера под капотом:
+
+```bash
+uvx --from git+https://github.com/ShDA009/mcp.git#subdirectory=zephyr-mcp zephyr-mcp
+```
+
+`zephyr-mcp` — консольный entry point (см. `[project.scripts]` в
+[pyproject.toml](pyproject.toml)). `--help` печатает справку и завершается без
+запуска stdio-сессии (используется скриптами для проверки установки).
+
+## Сборка (Docker, альтернатива)
 
 ```
 docker build -t zephyr-mcp:latest .
