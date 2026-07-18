@@ -1,11 +1,29 @@
 # outlook-mcp
 
 MCP-сервер только для чтения календаря и почты из on-prem Exchange по EWS
-(SOAP/NTLM). Работает в Docker, транспорт — stdio. Потребитель — Cline.
+(SOAP/NTLM). Транспорт — stdio. Потребитель — Cline. Запускается через
+`uvx` (рекомендуется) или в Docker.
 
 Статус: все фазы плана готовы (календарь + почта + `find_free_slots`). План — [task-ews-mcp-v3.md](task-ews-mcp-v3.md).
 
-## Сборка и запуск
+## Установка для сотрудников (uvx, без Docker)
+
+Готовые установочные скрипты в [install/](install/) — под Windows, macOS
+(Apple Silicon) и Linux. Скрипт находит/ставит `uv`, спрашивает креды,
+сохраняет `.env` и прописывает сервер в Cline идемпотентно. Инструкция —
+[install/README.md](install/README.md).
+
+Запуск сервера под капотом:
+
+```bash
+uvx --from git+https://github.com/ShDA009/mcp.git#subdirectory=outlook-mcp ews-mcp-server
+```
+
+`ews-mcp-server` — консольный entry point (см. `[project.scripts]` в
+[pyproject.toml](pyproject.toml)). `--help` печатает справку и завершается
+без запуска stdio-сессии (используется скриптами для проверки установки).
+
+## Сборка и запуск (Docker, альтернатива)
 
 ```bash
 docker build -t outlook-mcp .

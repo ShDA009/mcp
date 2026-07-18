@@ -156,6 +156,19 @@ def search_emails(
 
 
 def main() -> None:
+    # Лёгкий режим самопроверки для установочных скриптов: `ews-mcp-server --help`
+    # печатает справку и завершается, не открывая stdio-сессию (иначе процесс
+    # завис бы в ожидании ввода). Используется в setup.sh / setup.ps1.
+    import sys
+
+    if "--help" in sys.argv[1:] or "-h" in sys.argv[1:]:
+        print(
+            "outlook-mcp — read-only MCP server for Exchange/EWS (stdio transport).\n"
+            "Run without arguments to start the MCP stdio server.\n"
+            "Required env: EWS_URL, EWS_USERNAME, EWS_EMAIL, EWS_PASSWORD."
+        )
+        return
+
     mcp.run(transport="stdio")
 
 

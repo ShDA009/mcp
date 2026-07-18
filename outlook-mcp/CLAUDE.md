@@ -43,6 +43,18 @@ MCP-сервер только для чтения календаря и почт
   теме/отправителю/телу), `get_email_by_id` (тот же паттерн
   fetch-с-changekey + fallback-скан, что и в `calendar_service.py`).
 - `src/outlook_mcp/server.py` — регистрация MCP tools (`FastMCP`), точка входа.
+  `main()` также обрабатывает `--help`/`-h`: печатает справку и завершается
+  **не открывая stdio-сессию** (иначе процесс завис бы в ожидании ввода) —
+  это лёгкая самопроверка для установочных скриптов.
+- `install/` — установочные скрипты для сотрудников (`setup.sh` для
+  macOS arm64 + Linux, `setup.ps1` для Windows, `install/README.md`).
+  Запуск сервера через `uvx --from git+<repo>#subdirectory=outlook-mcp
+  ews-mcp-server` (не Docker). Скрипты идемпотентны: находят/ставят `uv`,
+  пишут `.env` (chmod 600), обновляют секцию `outlook-mcp` в
+  `cline_mcp_settings.json` на месте. Все 4 env-переменные (`EWS_URL`,
+  `EWS_USERNAME`, `EWS_EMAIL`, `EWS_PASSWORD`) обязательны и спрашиваются у
+  сотрудника — домен в код не зашивается. Entry point `ews-mcp-server`
+  объявлен в `[project.scripts]` (`pyproject.toml`).
 
 ## Важные решения
 

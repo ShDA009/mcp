@@ -9,6 +9,9 @@ dependencies = [
     "tzdata>=2024.1",
 ]
 
+[project.scripts]
+ews-mcp-server = "outlook_mcp.server:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
