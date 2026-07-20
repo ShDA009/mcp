@@ -28,6 +28,10 @@ class FakeCalendar:
     def filter(self, **_kwargs):
         return FakeQuerySet(self._items)
 
+    def view(self, start, end, max_items=None):
+        items = self._items if max_items is None else self._items[:max_items]
+        return FakeQuerySet(items)
+
 
 class FakeAccount:
     def __init__(self, items, fetch_result=None, fetch_error=None):
@@ -45,6 +49,9 @@ class FakeAccount:
 
 class RaisingCalendar:
     def filter(self, **_kwargs):
+        raise TransportError("boom")
+
+    def view(self, start, end, max_items=None):
         raise TransportError("boom")
 
 

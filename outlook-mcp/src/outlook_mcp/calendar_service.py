@@ -26,8 +26,8 @@ def list_events_for_range(
     effective_limit = min(effective_limit, config.max_limit)
 
     try:
-        qs = account.calendar.filter(start__lt=end_dt, end__gt=start_dt).order_by("-start")
-        items = list(qs[: effective_limit + 1])
+        qs = account.calendar.view(start=start_dt, end=end_dt, max_items=effective_limit + 1)
+        items = list(qs)
     except Exception as exc:
         raise translate_ews_error(exc) from exc
 

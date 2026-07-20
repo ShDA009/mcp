@@ -133,6 +133,26 @@ MCP-сервер только для чтения календаря и почт
   больше, чем limit" (`has_more`). Это правило актуально для любого нового
   tool, который листает папку/календарь — никогда не делать `list(qs)` без
   среза, если объём результата не гарантированно мал.
+- **list_events и повторяющиеся встречи (`view()` vs `filter()`)**:
+  `account.calendar.filter(...)` возвращает только `RecurringMaster` — одну
+  запись серии с её *исходными* start/end, поэтому регулярные встречи либо
+  показывались с датой первого проведения, либо вовсе выпадали из окна
+  (найдено на живом календаре: дейли-встреча была видна сегодня, но
+  пропадала на завтра). Исправлено переходом на
+  `account.calendar.view(start=start_dt, end=end_dt, max_items=...)` —
+  exchangelib реализует через него EWS `CalendarView`, который разворачивает
+  серию в отдельные `Occurrence`-items внутри запрошенного диапазона.
+  Компромиссы: (1) `max_items` — прямая замена правилу слайса выше, `view()`
+  сам ограничивает `FindItem`, слайсить `qs[:n]` не нужно и не имеет смысла;
+  (2) EWS запрещает комбинировать `CalendarView` с restrictions, поэтому
+  `.order_by("-start")` пришлось убрать — `list_events` теперь отдаёт
+  события в хронологическом порядке (по возрастанию `start`), а не в
+  обратном. `_find_by_id_in_calendar` (fallback-скан по ChangeKey) осознанно
+  остался на `filter()` — там как раз нужен master, чтобы резолвить id.
+  `format_event_summary` теперь всегда отдаёт `is_recurring` и `item_type`
+  (`Single`/`Occurrence`/`Exception`/`RecurringMaster`), а не только
+  `format_event_details` — иначе клиент не может отличить экземпляр серии
+  от одиночной встречи прямо в списке.
 - **search_emails и путь `sender`**: `Q(sender__email_address__contains=...)`
   ломается с `InvalidField: Unknown field path 'sender__email_address'`
   (найдено при ручной проверке на живом Exchange). Причина: `sender` в

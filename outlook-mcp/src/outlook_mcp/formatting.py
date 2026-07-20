@@ -50,20 +50,17 @@ def format_event_summary(item, timezone: str) -> dict:
         "attendees": attendees,
         "response_status": map_response_status(getattr(item, "my_response_type", None)),
         "location": getattr(item, "location", None),
+        "is_recurring": getattr(item, "is_recurring", False) or bool(
+            getattr(item, "recurrence", None)
+        ),
+        "item_type": getattr(item, "type", None),
     }
 
 
 def format_event_details(item, timezone: str) -> dict:
     summary = format_event_summary(item, timezone)
     body = getattr(item, "body", None)
-    summary.update(
-        {
-            "body": _body_to_text(body),
-            "is_recurring": getattr(item, "is_recurring", False) or bool(
-                getattr(item, "recurrence", None)
-            ),
-        }
-    )
+    summary.update({"body": _body_to_text(body)})
     return summary
 
 

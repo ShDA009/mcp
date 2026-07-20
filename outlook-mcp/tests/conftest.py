@@ -40,6 +40,7 @@ class FakeCalendarItem:
     body: FakeBody | None = None
     is_recurring: bool = False
     recurrence: object = None
+    type: str = "Single"
 
 
 @dataclass

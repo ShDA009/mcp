@@ -56,6 +56,15 @@ def test_format_event_summary_multiple_attendees_with_statuses():
     assert statuses["carl@example.com"] == "tentative"
 
 
+def test_format_event_summary_includes_recurrence_fields():
+    event = make_event()
+    event.is_recurring = True
+    event.type = "Occurrence"
+    result = format_event_summary(event, "Europe/Moscow")
+    assert result["is_recurring"] is True
+    assert result["item_type"] == "Occurrence"
+
+
 def test_format_event_details_includes_body_and_recurrence_flag():
     event = make_event(body_text="Discuss roadmap")
     event.is_recurring = True
