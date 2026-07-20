@@ -153,12 +153,20 @@ Email не требуется и нигде не используется.
    `uvx --from git+<repo>#subdirectory=zephyr-mcp zephyr-mcp`. Папка `install/`
    содержит установочные скрипты для сотрудников (`setup.sh` macOS arm64 +
    Linux, `setup.ps1` Windows) — зеркало `outlook-mcp/install/`: находят/ставят
-   `uv`, пишут `.env` (chmod 600, каталог `~/.config/zephyr-mcp`), идемпотентно
-   обновляют секцию `zephyr-scale` в `cline_mcp_settings.json`, спрашивают 2
-   переменные (`ZEPHYR_BASE_URL` видимо, `ZEPHYR_API_TOKEN` скрыто). **`main()`
+   `uv`, пишут `.env` (chmod 600, каталог `~/.config/zephyr-mcp` на macOS/Linux,
+   `%USERPROFILE%\.zephyr-mcp\.env` на Windows), идемпотентно обновляют секцию
+   `zephyr-scale` в `cline_mcp_settings.json` — **без кредов**, только
+   `command`/`args`/`disabled`/`transportType`. Спрашивают 2 переменные
+   (`ZEPHYR_BASE_URL` видимо, `ZEPHYR_API_TOKEN` скрыто). **`main()`
    в `__main__.py` перехватывает `--help`/`-h` ДО `load_config()`** — иначе
    `SystemExit` об отсутствии env не дал бы вывести справку; это лёгкая
    самопроверка для install-скриптов.
+   **`config.py` сам читает `.env`** как fallback, если переменной нет в
+   `os.environ` (путь выбирается через `platform.system()`, должен совпадать
+   с тем, что пишет соответствующий install-скрипт) — так секреты не
+   дублируются в JSON-конфиге Cline. `os.environ` приоритетнее файла. Тесты
+   изолируются от реального `.env` на машине разработчика через autouse-
+   фикстуру `no_env_file` в `tests/test_config.py`.
 
 5. Конфиг для подключения через Cline (VS Code) — `cline_mcp_settings.json` (см. README):
    ```json

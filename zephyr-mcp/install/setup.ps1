@@ -141,13 +141,11 @@ if (-not ($cfg.PSObject.Properties.Name -contains 'mcpServers') -or $null -eq $c
     $cfg | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) -Force
 }
 
+# Креды НЕ попадают в этот JSON: zephyr_mcp/config.py сам читает их из
+# %USERPROFILE%\.zephyr-mcp\.env при старте.
 $serverObj = [pscustomobject]@{
     command       = $UvxBin
     args          = @('--from', $GitUrl, $McpEntry)
-    env           = [pscustomobject]@{
-        ZEPHYR_BASE_URL  = $ZephyrUrl
-        ZEPHYR_API_TOKEN = $ZephyrToken
-    }
     disabled      = $false
     transportType = 'stdio'
 }

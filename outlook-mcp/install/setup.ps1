@@ -149,15 +149,11 @@ if (-not ($cfg.PSObject.Properties.Name -contains 'mcpServers') -or $null -eq $c
     $cfg | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) -Force
 }
 
+# Креды НЕ попадают в этот JSON: outlook_mcp/config.py сам читает их из
+# %USERPROFILE%\.outlook-mcp\.env при старте.
 $serverObj = [pscustomobject]@{
     command       = $UvxBin
     args          = @('--from', $GitUrl, $McpEntry)
-    env           = [pscustomobject]@{
-        EWS_URL      = $EwsUrl
-        EWS_USERNAME = $EwsUser
-        EWS_EMAIL    = $EwsEmail
-        EWS_PASSWORD = $EwsPass
-    }
     disabled      = $false
     transportType = 'stdio'
 }

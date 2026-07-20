@@ -1,6 +1,15 @@
 import pytest
 
+import outlook_mcp.config as config_module
 from outlook_mcp.config import Config, ConfigError
+
+
+@pytest.fixture(autouse=True)
+def no_env_file(monkeypatch, tmp_path):
+    # Изолируем тесты от реального ~/.config/outlook-mcp/.env (или его
+    # Windows-эквивалента), который мог создать install-скрипт на машине
+    # разработчика — тесты должны видеть только os.environ.
+    monkeypatch.setattr(config_module, "_ENV_FILE", tmp_path / "nonexistent.env")
 
 
 def test_validate_passes_with_all_required_vars(monkeypatch):
@@ -30,3 +39,28 @@ def test_defaults_applied(monkeypatch):
     assert cfg.timezone == "Europe/Moscow"
     assert cfg.default_limit == 50
     assert cfg.max_limit == 200
+
+
+def test_env_file_fills_missing_vars(monkeypatch, tmp_path):
+    for name in ("EWS_URL", "EWS_USERNAME", "EWS_EMAIL", "EWS_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "EWS_URL=https://mail.example.com/EWS/Exchange.asmx\n"
+        "EWS_USERNAME=user\n"
+        "EWS_EMAIL=user@example.com\n"
+        "EWS_PASSWORD=secret\n"
+    )
+    monkeypatch.setattr(config_module, "_ENV_FILE", env_file)
+    cfg = Config()
+    cfg.validate()
+    assert cfg.ews_username == "user"
+
+
+def test_os_environ_takes_priority_over_env_file(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("EWS_USERNAME=from_file\n")
+    monkeypatch.setattr(config_module, "_ENV_FILE", env_file)
+    monkeypatch.setenv("EWS_USERNAME", "from_environ")
+    cfg = Config()
+    assert cfg.ews_username == "from_environ"

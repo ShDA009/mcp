@@ -208,7 +208,6 @@ for p in python3 python; do command -v "$p" >/dev/null 2>&1 && { PY="$p"; break;
 
 CLINE_CFG="$CLINE_CFG" SERVER_KEY="$SERVER_KEY" UVX_BIN="$UVX_BIN" \
 GIT_URL="$GIT_URL" MCP_ENTRY="$MCP_ENTRY" \
-E_URL="$EWS_URL" E_USER="$EWS_USERNAME" E_EMAIL="$EWS_EMAIL" E_PASS="$EWS_PASSWORD" \
 "$PY" - <<'PYEOF'
 import json, os, sys
 
@@ -228,16 +227,11 @@ if not isinstance(servers, dict):
     servers = {}
     data["mcpServers"] = servers
 
-# Обновляем секцию на месте — не дублируем.
+# Обновляем секцию на месте — не дублируем. Креды НЕ попадают в этот JSON:
+# outlook_mcp/config.py сам читает их из ~/.config/outlook-mcp/.env при старте.
 servers[key] = {
     "command": os.environ["UVX_BIN"],
     "args": ["--from", os.environ["GIT_URL"], os.environ["MCP_ENTRY"]],
-    "env": {
-        "EWS_URL":      os.environ["E_URL"],
-        "EWS_USERNAME": os.environ["E_USER"],
-        "EWS_EMAIL":    os.environ["E_EMAIL"],
-        "EWS_PASSWORD": os.environ["E_PASS"],
-    },
     "disabled": False,
     "transportType": "stdio",
 }

@@ -33,6 +33,13 @@ cd ../zephyr-mcp && docker build -t zephyr-mcp:latest .
 
 `mcp-atlassian` и `gitlab-mcp` используют готовые образы из Docker Hub / GHCR.
 
+**Без Docker (uvx):** `outlook-mcp` и `zephyr-mcp` — собственные Python-серверы,
+их можно поставить установочным скриптом из `install/` в каждой папке (Windows/
+macOS/Linux) — они запускают сервер через `uvx` и сами прописывают его в Cline.
+См. [outlook-mcp/install/README.md](outlook-mcp/install/README.md) и
+[zephyr-mcp/install/README.md](zephyr-mcp/install/README.md). `mcp-atlassian` и
+`gitlab-mcp` — сторонние (Python/Node), остаются на Docker.
+
 ### 3. Подключить в AI-ассистенте
 
 Рабочие конфиги (с абсолютными путями):

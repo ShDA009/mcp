@@ -201,7 +201,6 @@ for p in python3 python; do command -v "$p" >/dev/null 2>&1 && { PY="$p"; break;
 
 CLINE_CFG="$CLINE_CFG" SERVER_KEY="$SERVER_KEY" UVX_BIN="$UVX_BIN" \
 GIT_URL="$GIT_URL" MCP_ENTRY="$MCP_ENTRY" \
-E_URL="$ZEPHYR_BASE_URL" E_TOKEN="$ZEPHYR_API_TOKEN" \
 "$PY" - <<'PYEOF'
 import json, os
 
@@ -221,14 +220,11 @@ if not isinstance(servers, dict):
     servers = {}
     data["mcpServers"] = servers
 
-# Обновляем секцию на месте — не дублируем.
+# Обновляем секцию на месте — не дублируем. Креды НЕ попадают в этот JSON:
+# zephyr_mcp/config.py сам читает их из ~/.config/zephyr-mcp/.env при старте.
 servers[key] = {
     "command": os.environ["UVX_BIN"],
     "args": ["--from", os.environ["GIT_URL"], os.environ["MCP_ENTRY"]],
-    "env": {
-        "ZEPHYR_BASE_URL":  os.environ["E_URL"],
-        "ZEPHYR_API_TOKEN": os.environ["E_TOKEN"],
-    },
     "disabled": False,
     "transportType": "stdio",
 }

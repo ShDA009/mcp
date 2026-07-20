@@ -24,6 +24,16 @@ MCP-сервер только для чтения календаря и почт
   значения: NTLM-аутентификация не требует email, а `exchangelib.Account`
   требует email, чтобы понять, какой ящик открывать. Проект открытый —
   домен намеренно не зашит в код, только через явную переменную.
+  **Fallback на файл `.env`**: если переменной нет в `os.environ`, `Config`
+  дочитывает её из `_ENV_FILE` (`~/.config/outlook-mcp/.env` на macOS/Linux,
+  `%USERPROFILE%\.outlook-mcp\.env` на Windows — путь зависит от
+  `platform.system()`, должен совпадать с тем, что пишет `install/setup.sh` /
+  `setup.ps1`). Так `cline_mcp_settings.json` не должен содержать секцию
+  `env` вовсе — install-скрипты прописывают только `command`/`args`, креды
+  не дублируются в JSON. `os.environ` всегда приоритетнее файла. Тесты
+  (`tests/test_config.py`) monkeypatch'ят `_ENV_FILE` на несуществующий путь
+  через autouse-фикстуру `no_env_file`, чтобы не зависеть от реального `.env`
+  на машине разработчика.
 - `src/outlook_mcp/ews_client.py` — подключение к EWS (`exchangelib.Account`,
   NTLM), маппинг исключений `exchangelib` → доменные ошибки.
 - `src/outlook_mcp/errors.py` — типизированные ошибки
