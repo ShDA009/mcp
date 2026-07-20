@@ -4,8 +4,6 @@ MCP-сервер только для чтения календаря и почт
 (SOAP/NTLM). Транспорт — stdio. Потребитель — Cline. Запускается через
 `uvx` (рекомендуется) или в Docker.
 
-Статус: все фазы плана готовы (календарь + почта + `find_free_slots`). План — [task-ews-mcp-v3.md](task-ews-mcp-v3.md).
-
 ## Установка для сотрудников (uvx, без Docker)
 
 Готовые установочные скрипты в [install/](install/) — под Windows, macOS
@@ -25,14 +23,16 @@ uvx --from git+https://github.com/ShDA009/mcp.git#subdirectory=outlook-mcp ews-m
 
 ## Сборка и запуск (Docker, альтернатива)
 
+При установке через `install/` (раздел выше) весь этот раздел не нужен —
+скрипт сам находит/ставит `uv`, пишет `.env` в `~/.config/outlook-mcp/.env` и
+прописывает Cline. Ниже — только для тех, кто предпочитает Docker вместо uvx.
+
 ```bash
 docker build -t outlook-mcp .
 docker run -i --rm --env-file .env outlook-mcp
 ```
 
-## Конфигурация (`.env`)
-
-Скопировать [.env.example](.env.example) и заполнить реальными значениями:
+Конфигурация (`.env`) — скопировать [.env.example](.env.example) и заполнить:
 
 ```bash
 EWS_URL=https://mail.example.com/EWS/Exchange.asmx
@@ -51,9 +51,7 @@ EWS_PASSWORD=changeme
 `.env` не должен попадать в репозиторий и не вшивается в образ — только
 через `--env-file` при запуске контейнера.
 
-## Подключение в Cline
-
-Фрагмент `cline_mcp_settings.json`:
+Фрагмент `cline_mcp_settings.json` для Docker-варианта:
 
 ```json
 "outlook-mcp": {
@@ -189,11 +187,19 @@ Exchange) — `slots` пустой массив, это не ошибка.
 ## Безопасность кред
 
 - `.env` — только локально, в `.gitignore`. В репозитории — только `.env.example`.
+  При установке через `install/` он лежит в `~/.config/outlook-mcp/.env`
+  (Windows: `%USERPROFILE%\.outlook-mcp\.env`), при Docker-варианте — рядом с
+  проектом, путь к нему передаётся через `--env-file`.
 - На боевой машине предпочтительно брать креды из системного keychain / KeePass
   (`keeenv`), а не хранить plaintext в `.env`. Сама keychain-интеграция пока
   не реализована — это только рекомендация.
 - В логах — только метаданные (количество элементов, коды ошибок, тайминги),
   без тел писем/встреч и без кредов.
+
+---
+
+Разделы ниже — для разработки и отладки сервера, не нужны для установки и
+обычного использования.
 
 ## Тесты
 

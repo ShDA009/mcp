@@ -1,18 +1,9 @@
 # outlook-mcp
 
 MCP-сервер только для чтения календаря и почты из on-prem Exchange по EWS
-(SOAP/NTLM), для потребителя Cline. Полный план — [task-ews-mcp-v3.md](task-ews-mcp-v3.md).
-
-## Статус
-
-- **Фаза 1 (готово)**: каркас MCP-сервера (stdio, FastMCP), EWS-клиент
-  (`exchangelib`, NTLM), tool `list_events`, Dockerfile, юнит-тесты.
-- **Фаза 2 (готово)**: `get_event(event_id)` с полными деталями, `list_events`
-  поддерживает диапазон дат (`target_date`/`end_date`).
-- **Фаза 3 (готово)**: почта — `list_emails`, `get_email`, `search_emails`.
-- **Фаза 4 (готово)**: полировка ошибок (`InvalidArgumentError`,
-  `ConfigurationError`), README, опциональный `find_free_slots`. Все фазы
-  плана завершены.
+(SOAP/NTLM), для потребителя Cline. Реализация завершена: календарь
+(`list_events`, `get_event`, `find_free_slots`), почта (`list_emails`,
+`get_email`, `search_emails`), структурированная обработка ошибок.
 
 ## Структура
 
@@ -179,59 +170,7 @@ MCP-сервер только для чтения календаря и почт
   `_validate_limit`, которые кидают `InvalidArgumentError` вместо того,
   чтобы дать `ValueError` вылететь из tool необработанным.
 
-## Тесты
+## Тесты, Docker, ручная проверка EWS, ограничения проекта
 
-```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest tests/ --cov=outlook_mcp --cov-report=term-missing
-```
-
-Все тесты — на фикстурах/моках (`tests/conftest.py`), без сети и без
-реального `exchangelib`-клиента. Текущее покрытие ~80%, модули
-парсинга/форматирования 88-100%.
-
-## Проверка EWS endpoint без Python
-
-Перед реализацией/после смены кредов — быстрая curl-проверка (SOAP
-`GetFolder` на Inbox, `--ntlm`):
-
-```bash
-curl -k --ntlm -u 'EWS_USERNAME:EWS_PASSWORD' \
-  -H 'Content-Type: text/xml; charset=utf-8' \
-  -X POST 'https://<host>/EWS/Exchange.asmx' \
-  --data-binary @- <<'EOF'
-<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
-               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
-               xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
-  <soap:Header><t:RequestServerVersion Version="Exchange2013_SP1" /></soap:Header>
-  <soap:Body>
-    <m:GetFolder>
-      <m:FolderShape><t:BaseShape>IdOnly</t:BaseShape></m:FolderShape>
-      <m:FolderIds><t:DistinguishedFolderId Id="inbox" /></m:FolderIds>
-    </m:GetFolder>
-  </soap:Body>
-</soap:Envelope>
-EOF
-```
-
-Успех — `ResponseClass="Success"` в теле ответа. Требует VPN/корп. сеть.
-
-## Docker
-
-```bash
-docker build -t outlook-mcp .
-docker run -i --rm --env-file .env outlook-mcp
-```
-
-Cline подключается через stdio (`docker run -i`). В `cline_mcp_settings.json`
-использовать `--env-file` с абсолютным путём к `.env`, а не `-e` в `args`
-(креды из `-e` попадают в системный промпт AI-модели). См. [README.md](README.md)
-для готового фрагмента.
-
-## Не делать (жёсткие ограничения из плана)
-
-- Никакой записи в Exchange (только чтение).
-- Никакого OAuth/Graph API — только EWS/NTLM.
-- Не отдавать содержимое вложений, только метаданные.
-- Не логировать тела писем/встреч и креды.
+См. [README.md](README.md) — команды тестов, curl-проверка EWS endpoint,
+Docker-фрагмент конфига и раздел «Не делать» не дублируются здесь.

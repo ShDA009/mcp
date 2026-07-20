@@ -1,0 +1,139 @@
+name: Check upstream MCP versions
+
+# Раз в неделю сравнивает актуальные версии mcp-atlassian (PyPI) и
+# @zereight/mcp-gitlab (npm) с диапазонами, зафиксированными в mcp-versions.txt.
+# Патчи внутри диапазона не требуют внимания — они подтягиваются лаунчерами
+# автоматически при каждом запуске сервера (см. mcp-atlassian/install/ и
+# gitlab-mcp/install/). Этот workflow предупреждает только о новой минорной
+# или мажорной ветке upstream, которая осталась бы незамеченной без него.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # каждый понедельник в 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for newer minor/major branches
+        id: check
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          def semver(s):
+              m = re.match(r"^(\d+)\.(\d+)\.(\d+)", s)
+              return tuple(int(x) for x in m.groups()) if m else None
+
+          def minor_branch(major, minor):
+              # (major, minor) как сравнимый кортеж — для сверки с полным semver
+              # берём только первые два компонента.
+              return (major, minor)
+
+          def get(url, headers=None):
+              req = urllib.request.Request(url, headers=headers or {})
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  return r.read().decode()
+
+          # --- mcp-versions.txt: диапазон нижней/верхней границы -------------------
+          versions = {}
+          with open("mcp-versions.txt", encoding="utf-8") as f:
+              for line in f:
+                  line = line.strip()
+                  if not line or line.startswith("#") or "=" not in line:
+                      continue
+                  k, _, v = line.partition("=")
+                  versions[k.strip()] = v.strip().strip('"')
+
+          findings = []
+
+          # --- mcp-atlassian: PyPI ----------------------------------------------
+          # Диапазон в mcp-versions.txt задан минорными границами вида
+          # ">=0.23,<0.24" (X.Y, не X.Y.Z) — сравниваем только (major, minor)
+          # последней версии с верхней границей, а не полный semver-кортеж
+          # (иначе, например, "0.24" никогда бы не смэтчил "\d+\.\d+\.\d+").
+          atlassian_spec = versions.get("ATLASSIAN_SPEC", "")
+          m = re.search(r">=(\d+)\.(\d+),<(\d+)\.(\d+)", atlassian_spec)
+          if m:
+              upper_major, upper_minor = int(m.group(3)), int(m.group(4))
+              data = json.loads(get("https://pypi.org/pypi/mcp-atlassian/json"))
+              latest = data["info"]["version"]
+              latest_v = semver(latest)
+              if latest_v and minor_branch(*latest_v[:2]) >= minor_branch(upper_major, upper_minor):
+                  findings.append(
+                      f"**mcp-atlassian**: диапазон `{atlassian_spec}` устарел — "
+                      f"на PyPI доступна {latest} (ветка >= верхней границы "
+                      f"{upper_major}.{upper_minor}). "
+                      f"https://github.com/sooperset/mcp-atlassian/releases"
+                  )
+
+          # --- gitlab-mcp: npm ---------------------------------------------------
+          gitlab_spec = versions.get("GITLAB_SPEC", "")
+          m = re.search(r"@\^(\d+)\.(\d+)", gitlab_spec)
+          if m:
+              major, minor = int(m.group(1)), int(m.group(2))
+              data = json.loads(get(
+                  "https://registry.npmjs.org/@zereight%2Fmcp-gitlab",
+                  headers={"Accept": "application/vnd.npm.install-v1+json"},
+              ))
+              latest = data["dist-tags"]["latest"]
+              latest_v = semver(latest)
+              if latest_v and (latest_v[0] > major or (latest_v[0] == major and latest_v[1] > minor)):
+                  findings.append(
+                      f"**gitlab-mcp**: диапазон `{gitlab_spec}` устарел — "
+                      f"на npm доступна {latest} (новее минорной ветки {major}.{minor}). "
+                      f"https://github.com/zereight/gitlab-mcp/releases"
+                  )
+
+          out = os.environ["GITHUB_OUTPUT"]
+          with open(out, "a", encoding="utf-8") as f:
+              if findings:
+                  body = "\n\n".join(findings)
+                  f.write("has_findings=true\n")
+                  f.write("body<<EOF\n")
+                  f.write(body + "\n")
+                  f.write("EOF\n")
+              else:
+                  f.write("has_findings=false\n")
+          PYEOF
+
+      - name: Create issue if outdated
+        if: steps.check.outputs.has_findings == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = process.env.ISSUE_BODY;
+            const title = "Upstream MCP: доступна новая минорная/мажорная версия";
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "upstream-version",
+            });
+            if (existing.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["upstream-version"],
+              });
+            }
+        env:
+          ISSUE_BODY: ${{ steps.check.outputs.body }}

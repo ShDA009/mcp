@@ -21,15 +21,27 @@ uvx --from git+https://github.com/ShDA009/mcp.git#subdirectory=zephyr-mcp zephyr
 [pyproject.toml](pyproject.toml)). `--help` печатает справку и завершается без
 запуска stdio-сессии (используется скриптами для проверки установки).
 
-## Сборка (Docker, альтернатива)
+## Сборка и запуск (Docker, альтернатива)
 
-```
+При установке через `install/` (раздел выше) весь этот раздел не нужен —
+скрипт сам находит/ставит `uv`, пишет `.env` в `~/.config/zephyr-mcp/.env` и
+прописывает Cline. Ниже — только для тех, кто предпочитает Docker вместо uvx.
+
+```bash
 docker build -t zephyr-mcp:latest .
 ```
 
-## Подключение через Cline (VS Code)
+Переменные окружения — создать файл `.env` в директории `zephyr-mcp/`:
 
-VS Code → Cline → MCP Servers → Configure → `cline_mcp_settings.json`:
+```
+ZEPHYR_BASE_URL=https://tasks.example.com
+ZEPHYR_API_TOKEN=your_token_here
+```
+
+- `ZEPHYR_BASE_URL` — URL Jira, например `https://tasks.example.com`
+- `ZEPHYR_API_TOKEN` — Bearer-токен (Personal Access Token)
+
+Фрагмент `cline_mcp_settings.json` для Docker-варианта:
 
 ```json
 {
@@ -47,47 +59,6 @@ VS Code → Cline → MCP Servers → Configure → `cline_mcp_settings.json`:
 }
 ```
 
-## Подключение через OpenCode
-
-`opencode.jsonc`:
-
-```json
-{
-  "mcp": {
-    "zephyr-scale": {
-      "type": "local",
-      "command": [
-        "docker", "run", "-i", "--rm",
-        "--env-file", "${MCP_DIR}/zephyr-mcp/.env",
-        "zephyr-mcp:latest"
-      ],
-      "enabled": true
-    }
-  }
-}
-```
-
-## Переменные окружения
-
-Создайте файл `.env` в директории `zephyr-mcp/`:
-
-```
-ZEPHYR_BASE_URL=https://tasks.example.com
-ZEPHYR_API_TOKEN=your_token_here
-```
-
-- `ZEPHYR_BASE_URL` — URL Jira, например `https://tasks.example.com`
-- `ZEPHYR_API_TOKEN` — Bearer-токен (Personal Access Token)
-
-## Локальный запуск (без Docker)
-
-```
-uv sync
-ZEPHYR_BASE_URL=https://tasks.example.com \
-ZEPHYR_API_TOKEN=... \
-uv run zephyr-mcp
-```
-
 ## Тулы
 
 | Тул | Параметры | Описание |
@@ -101,6 +72,22 @@ uv run zephyr-mcp
 | `get_cycles_batch` | `project_key`, `test_run_keys` | Полные test run объекты (с executions) по списку ключей |
 | `get_project` | `project_id_or_key` | Jira-проект по числовому id или ключу — резолвит id из URL (например `16816`) в `project_key` (например `CLOUDDEV`) |
 | `list_projects` | — | Список всех доступных токену Jira-проектов (id, key, name) |
+
+---
+
+Разделы ниже — для разработки и отладки сервера, не нужны для установки и
+обычного использования.
+
+## Локальный запуск для разработки (без Docker и без uvx)
+
+Для отладки прямо из клонированного репозитория, без публикации/git-URL:
+
+```bash
+uv sync
+ZEPHYR_BASE_URL=https://tasks.example.com \
+ZEPHYR_API_TOKEN=... \
+uv run zephyr-mcp
+```
 
 ## Тесты
 

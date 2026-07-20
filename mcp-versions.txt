@@ -1,0 +1,13 @@
+# Единственное место, где фиксируются версии сторонних MCP-серверов
+# (mcp-atlassian, gitlab-mcp), запускаемых через uvx/npx без Docker.
+#
+# Лаунчеры (~/.config/<server>/launch.sh) подтягивают этот файл при каждом
+# старте сервера с raw.githubusercontent.com — правка здесь + push доезжает
+# до всех сотрудников без переустановки (см. mcp-atlassian/install/README.md
+# и gitlab-mcp/install/README.md).
+#
+# Патчи внутри диапазона (например 0.23.0 -> 0.23.4) подхватываются сами.
+# Подъём на новую минорную/мажорную ветку — правка строки ниже + коммит.
+
+ATLASSIAN_SPEC="mcp-atlassian>=0.23,<0.24"
+GITLAB_SPEC="@zereight/mcp-gitlab@^2.1"
