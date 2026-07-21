@@ -1,4 +1,4 @@
-<#
+﻿<#
     Установочный скрипт mcp-atlassian (Jira + Confluence через сторонний
     сервер sooperset/mcp-atlassian) для Windows.
     Запуск: правый клик -> "Выполнить с помощью PowerShell",
@@ -7,6 +7,8 @@
 #>
 
 $ErrorActionPreference = 'Stop'
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # --- Константы --------------------------------------------------------------
 $ServerKey = 'mcp-atlassian'
@@ -143,9 +145,11 @@ $envLines = @(
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($EnvFile, ($envLines -join "`n") + "`n", $utf8)
 
-try {
-    icacls $EnvFile /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
-} catch { Write-Warn2 "Не удалось ужесточить права на $EnvFile (продолжаю)." }
+$icaclsUser = if ($env:USERDOMAIN) { "$env:USERDOMAIN\$env:USERNAME" } else { $env:USERNAME }
+icacls $EnvFile /inheritance:r /grant:r "$($icaclsUser):(R,W)" | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Warn2 "Не удалось ужесточить права на $EnvFile (icacls вернул код $LASTEXITCODE, продолжаю)."
+}
 Write-Ok "Креды сохранены в $EnvFile"
 
 # --- 5. Сгенерировать лаунчер ------------------------------------------------
@@ -202,13 +206,32 @@ $launchCmdLines = @(
 [System.IO.File]::WriteAllText($LaunchFile, ($launchCmdLines -join "`r`n") + "`r`n", $utf8)
 Write-Ok "Лаунчер сгенерирован: $LaunchFile"
 
-# --- 6. Обновить конфиг Cline идемпотентно ----------------------------------
+# --- 6. Проверочный вызов ---------------------------------------------------
+Write-Info 'Проверяю, что пакет ставится и запускается (launch.cmd --help)...'
+$helpOutput = & $LaunchFile --help 2>&1
+$ok = ($LASTEXITCODE -eq 0)
+if ($ok) {
+    Write-Ok 'Проверочный запуск успешен.'
+} else {
+    Write-Warn2 'Проверочный запуск завершился с ошибкой:'
+    $helpOutput | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkYellow }
+    Write-Warn2 'Возможные причины:'
+    Write-Warn2 '  - нет доступа к github.com и pypi.org (интернет / прокси);'
+    Write-Warn2 '  - VPN не подключён (для доступа к Jira/Confluence).'
+    Die 'Конфиг Cline не изменён — сервер в текущем состоянии не запустится. Устраните причину выше и запустите скрипт снова.'
+}
+
+# --- 7. Обновить конфиг Cline идемпотентно ----------------------------------
 if (-not (Test-Path $ClineDir)) { New-Item -ItemType Directory -Path $ClineDir -Force | Out-Null }
 
 Write-Info "Обновляю конфиг Cline: $ClineCfg"
 $cfg = $null
 if (Test-Path $ClineCfg) {
-    try { $cfg = Get-Content -Raw -Path $ClineCfg | ConvertFrom-Json } catch { $cfg = $null }
+    try {
+        $cfg = Get-Content -Raw -Path $ClineCfg | ConvertFrom-Json
+    } catch {
+        Die "Не удалось разобрать существующий $ClineCfg как JSON — файл не тронут, чтобы не потерять уже настроенные MCP-серверы.`nИсправьте файл вручную и запустите скрипт снова.`n$($_.Exception.Message)"
+    }
 }
 if (-not $cfg) { $cfg = [pscustomobject]@{ mcpServers = [pscustomobject]@{} } }
 if (-not ($cfg.PSObject.Properties.Name -contains 'mcpServers') -or $null -eq $cfg.mcpServers) {
@@ -225,25 +248,15 @@ $serverObj = [pscustomobject]@{
 
 $cfg.mcpServers | Add-Member -NotePropertyName $ServerKey -NotePropertyValue $serverObj -Force
 
-$json = $cfg | ConvertTo-Json -Depth 10
+if (Test-Path $ClineCfg) {
+    $backupPath = "$ClineCfg.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+    Copy-Item -Path $ClineCfg -Destination $backupPath -Force
+    Write-Info "  резервная копия: $backupPath"
+}
+
+$json = $cfg | ConvertTo-Json -Depth 32
 [System.IO.File]::WriteAllText($ClineCfg, $json + "`n", $utf8)
 Write-Ok "  секция '$ServerKey' обновлена (лаунчер $LaunchFile)"
-
-# --- 7. Проверочный вызов ---------------------------------------------------
-Write-Info 'Проверяю, что пакет ставится и запускается (launch.cmd --help)...'
-$ok = $false
-try {
-    & $LaunchFile --help *> $null
-    if ($LASTEXITCODE -eq 0) { $ok = $true }
-} catch { $ok = $false }
-if ($ok) {
-    Write-Ok 'Проверочный запуск успешен.'
-} else {
-    Write-Warn2 'Проверочный запуск завершился с ненулевым кодом.'
-    Write-Warn2 'Если Cline не подключится:'
-    Write-Warn2 '  - проверьте доступ к github.com и pypi.org (интернет / прокси);'
-    Write-Warn2 '  - проверьте, что подключён корпоративный VPN (для доступа к Jira/Confluence).'
-}
 
 # --- 8. Итог ----------------------------------------------------------------
 Write-Host ''

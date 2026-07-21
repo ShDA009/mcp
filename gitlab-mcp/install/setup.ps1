@@ -1,4 +1,4 @@
-<#
+﻿<#
     Установочный скрипт gitlab-mcp (GitLab через сторонний сервер
     zereight/gitlab-mcp, Node/npm) для Windows.
     Запуск: правый клик -> "Выполнить с помощью PowerShell",
@@ -7,6 +7,8 @@
 #>
 
 $ErrorActionPreference = 'Stop'
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # --- Константы --------------------------------------------------------------
 $ServerKey = 'gitlab-mcp'
@@ -109,9 +111,11 @@ $envLines = @(
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($EnvFile, ($envLines -join "`n") + "`n", $utf8)
 
-try {
-    icacls $EnvFile /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
-} catch { Write-Warn2 "Не удалось ужесточить права на $EnvFile (продолжаю)." }
+$icaclsUser = if ($env:USERDOMAIN) { "$env:USERDOMAIN\$env:USERNAME" } else { $env:USERNAME }
+icacls $EnvFile /inheritance:r /grant:r "$($icaclsUser):(R,W)" | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Warn2 "Не удалось ужесточить права на $EnvFile (icacls вернул код $LASTEXITCODE, продолжаю)."
+}
 Write-Ok "Креды сохранены в $EnvFile"
 
 # --- 4. Сгенерировать лаунчер ------------------------------------------------
@@ -167,34 +171,7 @@ $launchCmdLines = @(
 [System.IO.File]::WriteAllText($LaunchFile, ($launchCmdLines -join "`r`n") + "`r`n", $utf8)
 Write-Ok "Лаунчер сгенерирован: $LaunchFile"
 
-# --- 5. Обновить конфиг Cline идемпотентно ----------------------------------
-if (-not (Test-Path $ClineDir)) { New-Item -ItemType Directory -Path $ClineDir -Force | Out-Null }
-
-Write-Info "Обновляю конфиг Cline: $ClineCfg"
-$cfg = $null
-if (Test-Path $ClineCfg) {
-    try { $cfg = Get-Content -Raw -Path $ClineCfg | ConvertFrom-Json } catch { $cfg = $null }
-}
-if (-not $cfg) { $cfg = [pscustomobject]@{ mcpServers = [pscustomobject]@{} } }
-if (-not ($cfg.PSObject.Properties.Name -contains 'mcpServers') -or $null -eq $cfg.mcpServers) {
-    $cfg | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) -Force
-}
-
-# Ни версия, ни креды НЕ попадают в этот JSON: всё внутри launch.cmd и .env.
-$serverObj = [pscustomobject]@{
-    command       = $LaunchFile
-    args          = @()
-    disabled      = $false
-    transportType = 'stdio'
-}
-
-$cfg.mcpServers | Add-Member -NotePropertyName $ServerKey -NotePropertyValue $serverObj -Force
-
-$json = $cfg | ConvertTo-Json -Depth 10
-[System.IO.File]::WriteAllText($ClineCfg, $json + "`n", $utf8)
-Write-Ok "  секция '$ServerKey' обновлена (лаунчер $LaunchFile)"
-
-# --- 6. Проверочный вызов ---------------------------------------------------
+# --- 5. Проверочный вызов ----------------------------------------------------
 # gitlab-mcp не поддерживает --help и падает без валидных кредов — вместо
 # --help запускаем сервер на несколько секунд и ищем в логе подтверждение
 # успешного старта, затем завершаем процесс.
@@ -218,11 +195,49 @@ if ($selftestOk) {
     Write-Ok 'Проверочный запуск успешен.'
 } else {
     Write-Warn2 'Проверочный запуск не подтвердил успешный старт за 20 секунд.'
-    Write-Warn2 'Если Cline не подключится:'
-    Write-Warn2 '  - проверьте доступ в интернет / к github.com и registry.npmjs.org (прокси);'
-    Write-Warn2 '  - проверьте, что VPN подключён (для доступа к GitLab);'
-    Write-Warn2 '  - проверьте правильность GITLAB_API_URL и токена.'
+    Write-Warn2 'Возможные причины:'
+    Write-Warn2 '  - нет доступа в интернет / к github.com и registry.npmjs.org (прокси);'
+    Write-Warn2 '  - VPN не подключён (для доступа к GitLab);'
+    Write-Warn2 '  - неверный GITLAB_API_URL или токен.'
+    Die 'Конфиг Cline не изменён — сервер в текущем состоянии не запустится. Устраните причину выше и запустите скрипт снова.'
 }
+
+# --- 6. Обновить конфиг Cline идемпотентно ----------------------------------
+if (-not (Test-Path $ClineDir)) { New-Item -ItemType Directory -Path $ClineDir -Force | Out-Null }
+
+Write-Info "Обновляю конфиг Cline: $ClineCfg"
+$cfg = $null
+if (Test-Path $ClineCfg) {
+    try {
+        $cfg = Get-Content -Raw -Path $ClineCfg | ConvertFrom-Json
+    } catch {
+        Die "Не удалось разобрать существующий $ClineCfg как JSON — файл не тронут, чтобы не потерять уже настроенные MCP-серверы.`nИсправьте файл вручную и запустите скрипт снова.`n$($_.Exception.Message)"
+    }
+}
+if (-not $cfg) { $cfg = [pscustomobject]@{ mcpServers = [pscustomobject]@{} } }
+if (-not ($cfg.PSObject.Properties.Name -contains 'mcpServers') -or $null -eq $cfg.mcpServers) {
+    $cfg | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) -Force
+}
+
+# Ни версия, ни креды НЕ попадают в этот JSON: всё внутри launch.cmd и .env.
+$serverObj = [pscustomobject]@{
+    command       = $LaunchFile
+    args          = @()
+    disabled      = $false
+    transportType = 'stdio'
+}
+
+$cfg.mcpServers | Add-Member -NotePropertyName $ServerKey -NotePropertyValue $serverObj -Force
+
+if (Test-Path $ClineCfg) {
+    $backupPath = "$ClineCfg.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+    Copy-Item -Path $ClineCfg -Destination $backupPath -Force
+    Write-Info "  резервная копия: $backupPath"
+}
+
+$json = $cfg | ConvertTo-Json -Depth 32
+[System.IO.File]::WriteAllText($ClineCfg, $json + "`n", $utf8)
+Write-Ok "  секция '$ServerKey' обновлена (лаунчер $LaunchFile)"
 
 # --- 7. Итог ----------------------------------------------------------------
 Write-Host ''

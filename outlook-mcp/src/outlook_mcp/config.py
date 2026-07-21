@@ -21,15 +21,19 @@ else:
 def _read_env_file(path: Path) -> dict:
     values: dict = {}
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+        # utf-8-sig снимает BOM, если файл был сохранён редактором с ним
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
         return values
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        values[key.strip()] = value.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        values[key.strip()] = value
     return values
 
 
@@ -45,8 +49,19 @@ class Config:
         self.ews_password = _get("EWS_PASSWORD")
         self.ews_email = _get("EWS_EMAIL")
         self.timezone = _get("OUTLOOK_MCP_TIMEZONE", "Europe/Moscow")
-        self.default_limit = int(_get("OUTLOOK_MCP_DEFAULT_LIMIT", "50"))
-        self.max_limit = int(_get("OUTLOOK_MCP_MAX_LIMIT", "200"))
+        self.default_limit = self._parse_int(
+            "OUTLOOK_MCP_DEFAULT_LIMIT", _get("OUTLOOK_MCP_DEFAULT_LIMIT", "50")
+        )
+        self.max_limit = self._parse_int(
+            "OUTLOOK_MCP_MAX_LIMIT", _get("OUTLOOK_MCP_MAX_LIMIT", "200")
+        )
+
+    @staticmethod
+    def _parse_int(name: str, raw: str) -> int:
+        try:
+            return int(raw)
+        except ValueError:
+            raise ConfigError(f"Invalid integer value for {name}: {raw!r}") from None
 
     def validate(self) -> None:
         missing = [
