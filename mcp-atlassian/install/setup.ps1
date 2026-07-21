@@ -208,13 +208,17 @@ Write-Ok "Лаунчер сгенерирован: $LaunchFile"
 
 # --- 6. Проверочный вызов ---------------------------------------------------
 Write-Info 'Проверяю, что пакет ставится и запускается (launch.cmd --help)...'
-$helpOutput = & $LaunchFile --help 2>&1
-$ok = ($LASTEXITCODE -eq 0)
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$helpOutput = & $LaunchFile --help 2>&1 | Out-String
+$exitCode = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+$ok = ($exitCode -eq 0)
 if ($ok) {
     Write-Ok 'Проверочный запуск успешен.'
 } else {
     Write-Warn2 'Проверочный запуск завершился с ошибкой:'
-    $helpOutput | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkYellow }
+    Write-Host $helpOutput -ForegroundColor DarkYellow
     Write-Warn2 'Возможные причины:'
     Write-Warn2 '  - нет доступа к github.com и pypi.org (интернет / прокси);'
     Write-Warn2 '  - VPN не подключён (для доступа к Jira/Confluence).'

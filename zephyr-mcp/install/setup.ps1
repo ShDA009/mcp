@@ -134,13 +134,17 @@ Write-Ok "Креды сохранены в $EnvFile"
 
 # --- 5. Прогреть кэш uvx перед изменением конфига Cline ---------------------
 Write-Info 'Устанавливаю и проверяю пакет (uvx ... --help)...'
-$helpOutput = & $UvxBin --from $GitUrl $McpEntry --help 2>&1
-$selftestOk = ($LASTEXITCODE -eq 0)
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$helpOutput = & $UvxBin --from $GitUrl $McpEntry --help 2>&1 | Out-String
+$exitCode = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+$selftestOk = ($exitCode -eq 0)
 if ($selftestOk) {
     Write-Ok 'Пакет установлен и запускается.'
 } else {
     Write-Warn2 'Установка/запуск пакета завершились с ошибкой:'
-    $helpOutput | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkYellow }
+    Write-Host $helpOutput -ForegroundColor DarkYellow
     Write-Warn2 'Возможные причины:'
     Write-Warn2 '  - нет доступа к github.com (интернет / прокси);'
     Write-Warn2 '  - конфликт версий зависимостей.'
