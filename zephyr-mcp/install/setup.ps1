@@ -10,9 +10,14 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # --- Константы --------------------------------------------------------------
-$GitUrl     = 'git+https://github.com/ShDA009/mcp.git#subdirectory=zephyr-mcp'
+$RepoUrl    = 'https://github.com/ShDA009/mcp.git'
+$SubDir     = 'zephyr-mcp'
 $McpEntry   = 'zephyr-mcp'
 $ServerKey  = 'zephyr-scale'
+$PyVersion  = '3.12'   # pyproject.toml: requires-python = ">=3.12"
+$VersionsRawUrl = 'https://raw.githubusercontent.com/ShDA009/mcp/master/mcp-versions.txt'
+# Fallback-ref, если mcp-versions.txt недоступен при самой первой установке.
+$FallbackRef = 'master'
 
 function Write-Info($m) { Write-Host $m -ForegroundColor Cyan }
 function Write-Ok  ($m) { Write-Host $m -ForegroundColor Green }
@@ -21,25 +26,21 @@ function Die($m) { Write-Host $m -ForegroundColor Red; Read-Host 'Нажмите
 
 Write-Info '== Установка zephyr-mcp для Windows =='
 
-# --- 1. Поиск uv/uvx --------------------------------------------------------
-function Find-Uvx {
+# --- 1. Поиск uv ------------------------------------------------------------
+# Нужен именно uv (не uvx): им создаётся venv и ставится пакет.
+function Find-Uv {
     # 1) типичное место установки
-    $cand = Join-Path $env:USERPROFILE '.local\bin\uvx.exe'
+    $cand = Join-Path $env:USERPROFILE '.local\bin\uv.exe'
     if (Test-Path $cand) { return $cand }
     # 2) в PATH
-    $cmd = Get-Command uvx -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
     $cmd = Get-Command uv -ErrorAction SilentlyContinue
-    if ($cmd) {
-        $uvxNear = Join-Path (Split-Path $cmd.Source) 'uvx.exe'
-        if (Test-Path $uvxNear) { return $uvxNear }
-    }
+    if ($cmd) { return $cmd.Source }
     return $null
 }
 
-$UvxBin = Find-Uvx
-if ($UvxBin) {
-    Write-Ok "uvx найден: $UvxBin"
+$UvBin = Find-Uv
+if ($UvBin) {
+    Write-Ok "uv найден: $UvBin"
 } else {
     Write-Warn2 'uv не найден ни в %USERPROFILE%\.local\bin, ни в PATH.'
     $ans = Read-Host 'Установить uv в пользовательский профиль (прав администратора не требует)? (y/n)'
@@ -52,11 +53,11 @@ if ($UvxBin) {
     } catch {
         Die "Не удалось установить uv. Проверьте доступ в интернет / прокси и повторите.`n$($_.Exception.Message)"
     }
-    $UvxBin = Find-Uvx
-    if (-not $UvxBin) {
-        Die 'uv установлен, но uvx не найден автоматически. Перезапустите PowerShell и запустите скрипт снова.'
+    $UvBin = Find-Uv
+    if (-not $UvBin) {
+        Die 'uv установлен, но не найден автоматически. Перезапустите PowerShell и запустите скрипт снова.'
     }
-    Write-Ok "uv установлен: $UvxBin"
+    Write-Ok "uv установлен: $UvBin"
 }
 
 # --- 2. Пути конфигов -------------------------------------------------------
@@ -65,6 +66,10 @@ $ClineCfg = Join-Path $ClineDir 'cline_mcp_settings.json'
 
 $ConfDir = Join-Path $env:USERPROFILE '.zephyr-mcp'
 $EnvFile = Join-Path $ConfDir '.env'
+$VenvDir = Join-Path $ConfDir 'venv'
+$RefFile = Join-Path $ConfDir '.installed-ref'
+$LaunchScript = Join-Path $ConfDir 'launch.ps1'
+$LaunchFile = Join-Path $ConfDir 'launch.cmd'
 if (-not (Test-Path $ConfDir)) { New-Item -ItemType Directory -Path $ConfDir -Force | Out-Null }
 
 # --- 3. Прочитать существующий .env -----------------------------------------
@@ -132,26 +137,129 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Ok "Креды сохранены в $EnvFile"
 
-# --- 5. Прогреть кэш uvx перед изменением конфига Cline ---------------------
-Write-Info 'Устанавливаю и проверяю пакет (uvx ... --help)...'
-$prevEap = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-$helpOutput = & $UvxBin --from $GitUrl $McpEntry --help 2>&1 | Out-String
-$exitCode = $LASTEXITCODE
-$ErrorActionPreference = $prevEap
-$selftestOk = ($exitCode -eq 0)
-if ($selftestOk) {
-    Write-Ok 'Пакет установлен и запускается.'
-} else {
-    Write-Warn2 'Установка/запуск пакета завершились с ошибкой:'
-    Write-Host $helpOutput -ForegroundColor DarkYellow
-    Write-Warn2 'Возможные причины:'
-    Write-Warn2 '  - нет доступа к github.com (интернет / прокси);'
-    Write-Warn2 '  - конфликт версий зависимостей.'
-    Die 'Конфиг Cline не изменён — сервер в текущем состоянии не запустится. Устраните причину выше и запустите скрипт снова.'
+# --- 5. Установить пакет в локальный venv -----------------------------------
+# Раньше в конфиг Cline писался `uvx --from git+... zephyr-mcp`, то есть резолв
+# зависимостей из git выполнялся при КАЖДОМ старте сервера. Под Cline это
+# давало "Failed to resolve --with requirement" / Connection closed.
+# Теперь пакет ставится один раз сюда, а Cline запускает готовый лаунчер.
+
+# Ref берём из mcp-versions.txt (как и остальные серверы), с fallback.
+$TargetRef = $FallbackRef
+try {
+    $versionsText = (Invoke-WebRequest -Uri $VersionsRawUrl -TimeoutSec 10 -UseBasicParsing).Content
+    $refLine = $versionsText -split "`n" | Where-Object { $_ -match '^ZEPHYR_REF=' } | Select-Object -Last 1
+    if ($refLine) {
+        $refValue = ($refLine -replace '^ZEPHYR_REF=', '').Trim().Trim('"')
+        if ($refValue -match '^[A-Za-z0-9._/-]+$') { $TargetRef = $refValue }
+    }
+} catch {
+    Write-Warn2 "Не удалось получить mcp-versions.txt, использую '$FallbackRef'."
 }
 
-# --- 6. Обновить конфиг Cline идемпотентно ----------------------------------
+$PkgSpec = "git+$RepoUrl@$TargetRef#subdirectory=$SubDir"
+Write-Info "Устанавливаю пакет в $VenvDir (ref: $TargetRef)..."
+Write-Info 'Первая установка занимает 1-3 минуты (скачивание Python и зависимостей).'
+
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$venvLog = & $UvBin venv $VenvDir --python $PyVersion 2>&1 | Out-String
+$venvCode = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($venvCode -ne 0) {
+    Write-Warn2 'Не удалось создать venv:'
+    Write-Host $venvLog -ForegroundColor DarkYellow
+    Die 'Конфиг Cline не изменён. Устраните причину выше и запустите скрипт снова.'
+}
+
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$pipLog = & $UvBin pip install --python $VenvDir $PkgSpec 2>&1 | Out-String
+$pipCode = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($pipCode -ne 0) {
+    Write-Warn2 'Не удалось установить пакет:'
+    Write-Host $pipLog -ForegroundColor DarkYellow
+    Write-Warn2 'Возможные причины:'
+    Write-Warn2 '  - нет доступа к github.com / pypi.org (интернет / прокси);'
+    Write-Warn2 '  - конфликт версий зависимостей.'
+    Die 'Конфиг Cline не изменён. Устраните причину выше и запустите скрипт снова.'
+}
+
+$ServerExe = Join-Path $VenvDir "Scripts\$McpEntry.exe"
+if (-not (Test-Path $ServerExe)) {
+    Die "Пакет установлен, но $ServerExe не найден. Возможно, изменился entry point в pyproject.toml."
+}
+[System.IO.File]::WriteAllText($RefFile, $TargetRef + "`n", $utf8)
+Write-Ok "Пакет установлен: $ServerExe"
+
+# --- 6. Сгенерировать лаунчер с самообновлением -----------------------------
+# Лаунчер при старте сверяет ZEPHYR_REF из репо с .installed-ref и
+# переустанавливает пакет ТОЛЬКО при расхождении. Обычный старт = запуск exe,
+# без резолва зависимостей и без обращения к git.
+# launch.cmd — тонкая обёртка: Cline вызывает `command` как исполняемый файл
+# и не интерпретирует .ps1 напрямую.
+$launchScriptLines = @(
+    '$ErrorActionPreference = ''Stop'''
+    "`$ConfDir = '$ConfDir'"
+    "`$VenvDir = '$VenvDir'"
+    "`$RefFile = '$RefFile'"
+    "`$RawUrl = '$VersionsRawUrl'"
+    "`$RepoUrl = '$RepoUrl'"
+    "`$SubDir = '$SubDir'"
+    "`$UvBin = '$UvBin'"
+    "`$ServerExe = '$ServerExe'"
+    "`$PyVersion = '$PyVersion'"
+    ''
+    '# 1) Узнать целевой ref (короткий таймаут — не вешать старт сервера).'
+    '$targetRef = $null'
+    'try {'
+    '    $text = (Invoke-WebRequest -Uri $RawUrl -TimeoutSec 3 -UseBasicParsing).Content'
+    '    $line = $text -split "`n" | Where-Object { $_ -match ''^ZEPHYR_REF='' } | Select-Object -Last 1'
+    '    if ($line) {'
+    '        $v = ($line -replace ''^ZEPHYR_REF='', '''').Trim().Trim(''"'')'
+    '        if ($v -match ''^[A-Za-z0-9._/-]+$'') { $targetRef = $v }'
+    '    }'
+    '} catch { }'
+    ''
+    '# 2) Переустановить пакет, только если ref изменился или venv пропал.'
+    '$installedRef = if (Test-Path $RefFile) { (Get-Content $RefFile -Raw).Trim() } else { $null }'
+    'if ($targetRef -and (($targetRef -ne $installedRef) -or (-not (Test-Path $ServerExe)))) {'
+    '    try {'
+    '        if (-not (Test-Path $VenvDir)) { & $UvBin venv $VenvDir --python $PyVersion | Out-Null }'
+    '        & $UvBin pip install --python $VenvDir "git+$RepoUrl@$targetRef#subdirectory=$SubDir" | Out-Null'
+    '        if ($LASTEXITCODE -eq 0) { Set-Content -Path $RefFile -Value $targetRef -NoNewline }'
+    '    } catch { }'
+    '}'
+    ''
+    '# 3) Запустить сервер. Креды сервер читает сам из .env (см. config.py).'
+    '& $ServerExe @args'
+    'exit $LASTEXITCODE'
+)
+[System.IO.File]::WriteAllText($LaunchScript, ($launchScriptLines -join "`r`n") + "`r`n", $utf8)
+
+$launchCmdLines = @(
+    '@echo off'
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""$LaunchScript"" %*"
+)
+[System.IO.File]::WriteAllText($LaunchFile, ($launchCmdLines -join "`r`n") + "`r`n", $utf8)
+Write-Ok "Лаунчер сгенерирован: $LaunchFile"
+
+# --- 7. Проверочный вызов ---------------------------------------------------
+Write-Info 'Проверяю, что сервер запускается (--help)...'
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$helpOutput = & $ServerExe --help 2>&1 | Out-String
+$exitCode = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($exitCode -eq 0) {
+    Write-Ok 'Проверочный запуск успешен.'
+} else {
+    Write-Warn2 'Проверочный запуск завершился с ошибкой:'
+    Write-Host $helpOutput -ForegroundColor DarkYellow
+    Die 'Конфиг Cline не изменён. Устраните причину выше и запустите скрипт снова.'
+}
+
+# --- 8. Обновить конфиг Cline идемпотентно ----------------------------------
 if (-not (Test-Path $ClineDir)) { New-Item -ItemType Directory -Path $ClineDir -Force | Out-Null }
 
 Write-Info "Обновляю конфиг Cline: $ClineCfg"
@@ -168,11 +276,11 @@ if (-not ($cfg.PSObject.Properties.Name -contains 'mcpServers') -or $null -eq $c
     $cfg | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) -Force
 }
 
-# Креды НЕ попадают в этот JSON: zephyr_mcp/config.py сам читает их из
-# %USERPROFILE%\.zephyr-mcp\.env при старте.
+# Ни креды, ни версия НЕ попадают в этот JSON: креды zephyr_mcp/config.py
+# читает сам из %USERPROFILE%\.zephyr-mcp\.env, версию держит лаунчер.
 $serverObj = [pscustomobject]@{
-    command       = $UvxBin
-    args          = @('--from', $GitUrl, $McpEntry)
+    command       = $LaunchFile
+    args          = @()
     disabled      = $false
     transportType = 'stdio'
 }
@@ -188,14 +296,16 @@ if (Test-Path $ClineCfg) {
 
 $json = $cfg | ConvertTo-Json -Depth 32
 [System.IO.File]::WriteAllText($ClineCfg, $json + "`n", $utf8)
-Write-Ok "  секция '$ServerKey' обновлена (командой $UvxBin)"
+Write-Ok "  секция '$ServerKey' обновлена (лаунчер $LaunchFile)"
 
-# --- 7. Итог ----------------------------------------------------------------
+# --- 9. Итог ----------------------------------------------------------------
 Write-Host ''
 Write-Ok '== Готово =='
-Write-Host "  uv/uvx:  $UvxBin"
-Write-Host "  Конфиг:  $EnvFile"
-Write-Host "  Cline:   $ClineCfg (сервер '$ServerKey')"
+Write-Host "  uv:       $UvBin"
+Write-Host "  Пакет:    $VenvDir (ref: $TargetRef)"
+Write-Host "  Конфиг:   $EnvFile"
+Write-Host "  Лаунчер:  $LaunchFile"
+Write-Host "  Cline:    $ClineCfg (сервер '$ServerKey')"
 Write-Host ''
 Write-Info 'Дальше:'
 Write-Host '  1. Полностью перезапустите VS Code (и Cline).'
