@@ -9,6 +9,15 @@ $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# uv по умолчанию использует свой набор корневых сертификатов и не доверяет
+# корпоративному CA при TLS-инспекции (Zscaler и т.п.) — скачивание Python
+# и пакетов падает с "invalid peer certificate: UnknownIssuer". Эти флаги
+# заставляют uv брать сертификаты из системного хранилища Windows, куда
+# корп-CA уже добавлен. UV_SYSTEM_CERTS — актуальное имя, UV_NATIVE_TLS —
+# для старых версий uv (оба безвредны, если инспекции нет).
+$env:UV_SYSTEM_CERTS = '1'
+$env:UV_NATIVE_TLS = '1'
+
 # --- Константы --------------------------------------------------------------
 $RepoUrl    = 'https://github.com/ShDA009/mcp.git'
 $SubDir     = 'zephyr-mcp'
@@ -200,6 +209,9 @@ Write-Ok "Пакет установлен: $ServerExe"
 # и не интерпретирует .ps1 напрямую.
 $launchScriptLines = @(
     '$ErrorActionPreference = ''Stop'''
+    '# см. комментарий в setup.ps1: доверять корп-CA при обновлении пакета.'
+    '$env:UV_SYSTEM_CERTS = ''1'''
+    '$env:UV_NATIVE_TLS = ''1'''
     "`$ConfDir = '$ConfDir'"
     "`$VenvDir = '$VenvDir'"
     "`$RefFile = '$RefFile'"
