@@ -3,7 +3,13 @@
     Запуск: правый клик -> "Выполнить с помощью PowerShell",
             либо:  powershell -ExecutionPolicy Bypass -File setup.ps1
     Прав администратора не требует.
+
+    Флаг -Clean: перед установкой очистить кэш uv. Нужен редко — только если
+    подозреваете, что кэш повреждён (обычно установка и без него идёт с нуля,
+    т.к. venv пересоздаётся через --clear). Пример:
+        powershell -ExecutionPolicy Bypass -File setup.ps1 -Clean
 #>
+param([switch]$Clean)
 
 $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -113,17 +119,23 @@ function Read-NonEmpty($prompt, $default) {
     }
 }
 
+# Распаковка SecureString в обычную строку. NetworkCredential работает
+# одинаково в Windows PowerShell 5.1 и PowerShell 7+ (в отличие от
+# Marshal::PtrToStringBSTR, капризного на разных сборках .NET в PS7, и
+# ConvertFrom-SecureString -AsPlainText, которого нет в 5.1).
+function Read-SecretNonEmpty($prompt) {
+    while ($true) {
+        $sec = Read-Host $prompt -AsSecureString
+        $v = [System.Net.NetworkCredential]::new('', $sec).Password
+        if (-not [string]::IsNullOrWhiteSpace($v)) { return $v }
+        Write-Warn2 'Значение не может быть пустым.'
+    }
+}
+
 if ($change) {
     Write-Info 'Введите параметры подключения к Zephyr Scale / ATM (Jira):'
     $ZephyrUrl = Read-NonEmpty '  Base URL (https://jira.example.com)' $curUrl
-    while ($true) {
-        $sec = Read-Host '  Personal Access Token (ввод скрыт)' -AsSecureString
-        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
-        try   { $ZephyrToken = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
-        finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-        if (-not [string]::IsNullOrWhiteSpace($ZephyrToken)) { break }
-        Write-Warn2 'Токен не может быть пустым.'
-    }
+    $ZephyrToken = Read-SecretNonEmpty '  Personal Access Token (ввод скрыт)'
 } else {
     $ZephyrUrl = $curUrl; $ZephyrToken = $curToken
     Write-Ok 'Креды оставлены без изменений.'
@@ -152,6 +164,16 @@ Write-Ok "Креды сохранены в $EnvFile"
 # давало "Failed to resolve --with requirement" / Connection closed.
 # Теперь пакет ставится один раз сюда, а Cline запускает готовый лаунчер.
 
+# uv ставит пакет из git+... и для этого вызывает системный git (собственного
+# git у uv нет). Проверяем заранее, чтобы дать понятную ошибку, а не
+# невнятное "Git operation failed" из глубины uv.
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Warn2 'Не найден git — он нужен, чтобы установить пакет из репозитория.'
+    Write-Warn2 'Установите Git for Windows: https://git-scm.com/download/win'
+    Write-Warn2 '(или через "winget install --id Git.Git"), затем перезапустите этот скрипт.'
+    Die 'Конфиг Cline не изменён. Установите git и запустите скрипт снова.'
+}
+
 # Ref берём из mcp-versions.txt (как и остальные серверы), с fallback.
 $TargetRef = $FallbackRef
 try {
@@ -169,9 +191,14 @@ $PkgSpec = "git+$RepoUrl@$TargetRef#subdirectory=$SubDir"
 Write-Info "Устанавливаю пакет в $VenvDir (ref: $TargetRef)..."
 Write-Info 'Первая установка занимает 1-3 минуты (скачивание Python и зависимостей).'
 
+if ($Clean) {
+    Write-Info 'Очищаю кэш uv (-Clean)...'
+    & $UvBin cache clean | Out-Null
+}
+
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
-$venvLog = & $UvBin venv $VenvDir --python $PyVersion 2>&1 | Out-String
+$venvLog = & $UvBin venv $VenvDir --python $PyVersion --clear 2>&1 | Out-String
 $venvCode = $LASTEXITCODE
 $ErrorActionPreference = $prevEap
 if ($venvCode -ne 0) {
@@ -188,9 +215,22 @@ $ErrorActionPreference = $prevEap
 if ($pipCode -ne 0) {
     Write-Warn2 'Не удалось установить пакет:'
     Write-Host $pipLog -ForegroundColor DarkYellow
-    Write-Warn2 'Возможные причины:'
-    Write-Warn2 '  - нет доступа к github.com / pypi.org (интернет / прокси);'
-    Write-Warn2 '  - конфликт версий зависимостей.'
+    # Подсказку подбираем по тексту ошибки uv, а не печатаем всё подряд.
+    if ($pipLog -match '(?i)No solution found|version conflict|are incompatible') {
+        Write-Warn2 'Похоже на конфликт версий зависимостей. Очистите кэш uv и повторите:'
+        Write-Warn2 "  & '$UvBin' cache clean"
+        Write-Warn2 "  Remove-Item -Recurse -Force '$VenvDir'"
+        Write-Warn2 '  затем запустите этот скрипт снова.'
+    } elseif ($pipLog -match '(?i)Git executable not found|Git operation failed') {
+        Write-Warn2 'Не найден git. Установите Git for Windows: https://git-scm.com/download/win'
+    } elseif ($pipLog -match '(?i)certificate|UnknownIssuer|self.signed') {
+        Write-Warn2 'Проблема с TLS-сертификатом (корпоративная инспекция).'
+        Write-Warn2 'Убедитесь, что корпоративный CA добавлен в хранилище сертификатов Windows.'
+    } else {
+        Write-Warn2 'Возможные причины:'
+        Write-Warn2 '  - нет доступа к github.com / pypi.org (интернет / прокси);'
+        Write-Warn2 '  - недоступен корпоративный VPN.'
+    }
     Die 'Конфиг Cline не изменён. Устраните причину выше и запустите скрипт снова.'
 }
 
