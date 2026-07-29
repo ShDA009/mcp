@@ -363,11 +363,38 @@ def _merge_intervals(intervals: list) -> list:
     return merged
 
 
+def _weekday_names(weekdays) -> set[str]:
+    """Normalize EWS weekdays to day names.
+
+    exchangelib returns WorkingPeriod.weekdays as 1-based indices into
+    WEEKDAY_NAMES, not as strings (EnumListField.from_xml in
+    exchangelib/fields.py: `[self.enum.index(v) + 1 for v in val.split(" ")]`).
+    Strings are still accepted so a future/alternative parsing path or a
+    hand-built object keeps working.
+    """
+    names = set()
+    for value in weekdays or []:
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            if 1 <= value <= len(_WEEKDAY_NAMES):
+                names.add(_WEEKDAY_NAMES[value - 1])
+        else:
+            names.add(str(value))
+    return names
+
+
 def _working_period_for_weekday(view, weekday_name: str):
+    """Find the WorkingPeriod covering the given weekday.
+
+    Comparing weekday_name directly against period.weekdays silently never
+    matches, because those are integer indices - that made every day look
+    like a non-working day and find_free_slots always return no slots.
+    """
     if view is None:
         return None
     for period in getattr(view, "working_hours", None) or []:
-        if weekday_name in (period.weekdays or []):
+        if weekday_name in _weekday_names(getattr(period, "weekdays", None)):
             return period.start, period.end
     return None
 

@@ -10,6 +10,8 @@ from outlook_mcp.calendar_service import (
     _HARD_BUSY_TYPES,
     _merge_intervals,
     _TENTATIVE_BUSY_TYPE,
+    _weekday_names,
+    _working_period_for_weekday,
     find_free_slots,
     get_event_by_id,
     list_events_for_range,
@@ -141,9 +143,24 @@ def test_get_event_by_id_not_found_raises():
         get_event_by_id(account, "MISSING:KEY", make_config())
 
 
+_EWS_WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
 class FakeWorkingPeriod:
+    """Mirrors exchangelib's WorkingPeriod.
+
+    IMPORTANT: exchangelib returns `weekdays` as 1-based indices into
+    WEEKDAY_NAMES (EnumListField.from_xml: `[self.enum.index(v) + 1 ...]`),
+    NOT as day-name strings. This fake stores indices for that reason - an
+    earlier version stored the strings it was constructed with, which made
+    the whole suite pass against a completely broken _working_period_for_weekday.
+    Tests may still pass readable names; they are converted here.
+    """
+
     def __init__(self, weekdays, start, end):
-        self.weekdays = weekdays
+        self.weekdays = [
+            _EWS_WEEKDAY_NAMES.index(day) + 1 if isinstance(day, str) else day for day in weekdays
+        ]
         self.start = start
         self.end = end
 
@@ -934,3 +951,63 @@ def test_diagnostics_includes_unavailable():
             account, date(2026, 7, 15), 30, make_config(), emails=["bad@example.com"], debug=True
         )
     assert result["diagnostics"]["unavailable"] == result["unavailable"]
+
+
+# --- weekdays normalization (WorkingPeriod.weekdays are indices, not strings) ---
+
+
+def test_weekday_names_converts_ews_indices():
+    # exchangelib returns 1-based indices into WEEKDAY_NAMES
+    assert _weekday_names([1]) == {"Monday"}
+    assert _weekday_names([4]) == {"Thursday"}
+    assert _weekday_names([7]) == {"Sunday"}
+    assert _weekday_names([1, 2, 3, 4, 5]) == {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"}
+
+
+def test_weekday_names_accepts_strings_for_backwards_compatibility():
+    assert _weekday_names(["Thursday"]) == {"Thursday"}
+
+
+def test_weekday_names_handles_empty_and_none():
+    assert _weekday_names(None) == set()
+    assert _weekday_names([]) == set()
+
+
+def test_weekday_names_ignores_out_of_range_index():
+    assert _weekday_names([0]) == set()
+    assert _weekday_names([8]) == set()
+    assert _weekday_names([99, 4]) == {"Thursday"}
+
+
+def test_working_period_for_weekday_matches_integer_weekdays():
+    """Regression: the live EWS representation must match, not just strings."""
+
+    class RawWorkingPeriod:
+        weekdays = [4]  # Thursday, exactly as exchangelib returns it
+        start = time(9, 0)
+        end = time(18, 0)
+
+    class RawView:
+        working_hours = [RawWorkingPeriod()]
+
+    assert _working_period_for_weekday(RawView(), "Thursday") == (time(9, 0), time(18, 0))
+    assert _working_period_for_weekday(RawView(), "Friday") is None
+
+
+def test_find_free_slots_finds_slots_with_integer_weekdays():
+    """End-to-end regression for the bug that made every day look non-working.
+
+    2026-07-30 is a Thursday; weekdays are given as EWS gives them (index 4).
+    """
+
+    class RawWorkingPeriod:
+        weekdays = [4]
+        start = time(9, 0)
+        end = time(18, 0)
+
+    view = FakeFreeBusyView([RawWorkingPeriod()], [])
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 30), 30, make_config())
+
+    assert result["reason"] == "ok"
+    assert len(result["slots"]) > 0
