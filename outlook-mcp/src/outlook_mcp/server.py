@@ -5,6 +5,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .calendar_service import find_free_slots as find_free_slots_svc, get_event_by_id, list_events_for_range
 from .config import load_config
+from .directory_service import resolve_person as resolve_person_svc
 from .errors import InvalidArgumentError, OutlookMcpError
 from .ews_client import build_account
 from .mail_service import get_email_by_id, list_emails as list_emails_svc, search_emails as search_emails_svc
@@ -43,6 +44,41 @@ def _validate_limit(limit: int | None) -> int | None:
     return limit
 
 
+_MAX_FREE_BUSY_EMAILS = 20
+
+
+def _validate_emails(emails: list[str] | None) -> list[str]:
+    """Normalize and validate an optional list of participant SMTP addresses.
+
+    None or an empty list means "own mailbox only". Validation is deliberately
+    lenient (just checks for a non-empty local/domain split around "@") since
+    Exchange is the authority on whether an address actually resolves - a
+    well-formed but unknown address should end up in the "unavailable" field
+    of the result, not raise here.
+    """
+    if emails is None:
+        return []
+    if not isinstance(emails, list):
+        raise InvalidArgumentError(f"Invalid emails {emails!r}, expected a list of email addresses")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in emails:
+        if not isinstance(raw, str):
+            raise InvalidArgumentError(f"Invalid email {raw!r}, expected a string")
+        value = raw.strip().lower()
+        if not value or "@" not in value or value.startswith("@") or value.endswith("@"):
+            raise InvalidArgumentError(f"Invalid email {raw!r}, expected an address like name@example.com")
+        if value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+
+    if len(normalized) > _MAX_FREE_BUSY_EMAILS:
+        raise InvalidArgumentError(f"Too many emails ({len(normalized)}), maximum is {_MAX_FREE_BUSY_EMAILS}")
+    return normalized
+
+
 @mcp.tool()
 def list_events(target_date: str | None = None, end_date: str | None = None) -> dict:
     """List calendar events for a date or date range (YYYY-MM-DD, defaults to today, Europe/Moscow).
@@ -76,18 +112,54 @@ def get_event(event_id: str) -> dict:
 
 
 @mcp.tool()
-def find_free_slots(target_date: str, duration_min: int) -> dict:
-    """Find free time slots of the given duration (minutes) within working hours on a given date (YYYY-MM-DD)."""
+def find_free_slots(target_date: str, duration_min: int, emails: list[str] | None = None) -> dict:
+    """Find free time slots of the given duration (minutes) within working hours on a given date (YYYY-MM-DD).
+
+    emails - optional list of colleagues' SMTP addresses. When given, a slot is
+    returned only if the own mailbox AND every listed person is free; the own
+    mailbox is always part of the intersection. Working hours always come from
+    the own mailbox's Exchange settings, not the other participants'.
+    Participants whose free/busy cannot be read (no permission, unknown
+    mailbox) are skipped and listed in the "unavailable" field of the result
+    instead of failing the call.
+    """
     try:
         day = _parse_date(target_date, "target_date")
         if duration_min <= 0:
             raise InvalidArgumentError(f"Invalid duration_min {duration_min!r}, must be a positive integer")
+        participants = _validate_emails(emails)
         account = get_account()
-        result = find_free_slots_svc(account, day, duration_min, _config)
-        logger.info("find_free_slots returned %d slot(s)", len(result["slots"]))
+        result = find_free_slots_svc(account, day, duration_min, _config, emails=participants)
+        logger.info(
+            "find_free_slots returned %d slot(s) for %d extra participant(s), %d unavailable",
+            len(result["slots"]),
+            len(participants),
+            len(result["unavailable"]),
+        )
         return result
     except OutlookMcpError as exc:
         logger.error("find_free_slots failed: %s", exc.code)
+        return exc.to_dict()
+
+
+@mcp.tool()
+def resolve_person(query: str) -> dict:
+    """Look up a colleague's email address by (partial) name in the Exchange address book.
+
+    query - a name or part of a name (e.g. "Ivanov Ivan"), not necessarily an
+    email address. Returns a list of candidates ({"name", "email"}); no match
+    yields an empty list rather than an error. Use this before find_free_slots
+    when you only have a person's name, not their email.
+    """
+    try:
+        if not query or not query.strip():
+            raise InvalidArgumentError("query must not be empty")
+        account = get_account()
+        result = resolve_person_svc(account, query.strip())
+        logger.info("resolve_person returned %d candidate(s)", len(result["candidates"]))
+        return result
+    except OutlookMcpError as exc:
+        logger.error("resolve_person failed: %s", exc.code)
         return exc.to_dict()
 
 

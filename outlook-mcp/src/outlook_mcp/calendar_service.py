@@ -1,3 +1,4 @@
+import logging
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -5,9 +6,11 @@ from exchangelib import EWSTimeZone
 from exchangelib.errors import ErrorInvalidChangeKey, ErrorInvalidIdMalformed, ErrorItemNotFound
 
 from .config import Config
-from .errors import ItemNotFoundError
+from .errors import ItemNotFoundError, OutlookMcpError
 from .ews_client import translate_ews_error
 from .formatting import decode_item_id, format_event_details, format_event_summary
+
+logger = logging.getLogger(__name__)
 
 _STALE_ID_ERRORS = (ErrorInvalidChangeKey, ErrorItemNotFound, ErrorInvalidIdMalformed)
 
@@ -94,25 +97,39 @@ def _find_by_id_in_calendar(account, item_id: str):
 _WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
-def find_free_slots(account, target_date: date, duration_min: int, config: Config) -> dict:
+def find_free_slots(
+    account,
+    target_date: date,
+    duration_min: int,
+    config: Config,
+    emails: list[str] | None = None,
+) -> dict:
     tz = ZoneInfo(config.timezone)
     ews_tz = EWSTimeZone.from_zoneinfo(tz)
     day_start = datetime.combine(target_date, time.min, tzinfo=ews_tz)
     day_end = datetime.combine(target_date, time.max, tzinfo=ews_tz)
 
     try:
-        view = _get_free_busy_view(account, day_start, day_end)
+        own_view = _get_free_busy_view(account, day_start, day_end)
     except Exception as exc:
         raise translate_ews_error(exc) from exc
 
-    working_period = _working_period_for_weekday(view, target_date.strftime("%A"))
+    working_period = _working_period_for_weekday(own_view, target_date.strftime("%A"))
     if working_period is None:
-        return {"slots": [], "has_more": False}
+        return {"slots": [], "has_more": False, "unavailable": []}
 
     work_start = datetime.combine(target_date, working_period[0], tzinfo=tz)
     work_end = datetime.combine(target_date, working_period[1], tzinfo=tz)
 
-    busy_intervals = _busy_intervals_within(view, work_start, work_end, tz)
+    views = [own_view]
+    unavailable: list[dict] = []
+    if emails:
+        other_views, unavailable = _collect_participant_views(account, emails, day_start, day_end)
+        views.extend(other_views)
+
+    busy_intervals = _merge_intervals(
+        [interval for view in views for interval in _busy_intervals_within(view, work_start, work_end, tz)]
+    )
     free_slots = _subtract_intervals(work_start, work_end, busy_intervals)
 
     duration = timedelta(minutes=duration_min)
@@ -121,7 +138,7 @@ def find_free_slots(account, target_date: date, duration_min: int, config: Confi
         for window_slot_start, window_slot_end in free_slots
         for start in _iter_slot_starts(window_slot_start, window_slot_end, duration)
     ]
-    return {"slots": slots, "has_more": False}
+    return {"slots": slots, "has_more": False, "unavailable": unavailable}
 
 
 def _get_free_busy_view(account, window_start: datetime, window_end: datetime):
@@ -137,6 +154,77 @@ def _get_free_busy_view(account, window_start: datetime, window_end: datetime):
     if isinstance(result, Exception):
         raise result
     return result
+
+
+def _get_free_busy_view_for_email(account, email: str, window_start: datetime, window_end: datetime):
+    """Fetch a FreeBusyView for a mailbox we do not own, by SMTP address.
+
+    exchangelib's get_free_busy_info accepts either an Account or a plain str
+    as the first tuple element (protocol.py: `account.primary_smtp_address if
+    isinstance(account, Account) else account`), so a string is the supported
+    way to request a foreign mailbox.
+    """
+    results = list(
+        account.protocol.get_free_busy_info(
+            accounts=[(email, "Required", False)],
+            start=window_start,
+            end=window_end,
+        )
+    )
+    if not results:
+        return None
+    result = results[0]
+    if isinstance(result, Exception):
+        raise result
+    return result
+
+
+def _unavailable_reason(exc: Exception) -> str:
+    translated = translate_ews_error(exc)
+    if isinstance(translated, OutlookMcpError):
+        return str(translated)
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _collect_participant_views(
+    account,
+    emails: list[str],
+    window_start: datetime,
+    window_end: datetime,
+) -> tuple[list, list[dict]]:
+    """Fetch a FreeBusyView per email, isolating failures per participant.
+
+    One EWS request per email is deliberate: exchangelib only returns
+    per-entry Exception objects for errors listed in
+    EWSService.ERRORS_TO_CATCH_IN_RESPONSE (e.g. ErrorMailRecipientNotFound);
+    everything else (ErrorNoFreeBusyAccess, ErrorProxyRequestNotAllowed,
+    ErrorMailboxMoved, ...) is raised and would abort a single batched call
+    for every participant. Do not "optimize" this back into one request.
+    """
+    views = []
+    unavailable: list[dict] = []
+    for email in emails:
+        try:
+            view = _get_free_busy_view_for_email(account, email, window_start, window_end)
+        except Exception as exc:  # noqa: BLE001 - deliberately non-fatal per participant
+            logger.warning("free/busy unavailable for %s: %s", email, exc)
+            unavailable.append({"email": email, "reason": _unavailable_reason(exc)})
+            continue
+        if view is None:
+            unavailable.append({"email": email, "reason": "No free/busy data returned for this mailbox"})
+            continue
+        views.append(view)
+    return views, unavailable
+
+
+def _merge_intervals(intervals: list) -> list:
+    merged = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def _working_period_for_weekday(view, weekday_name: str):

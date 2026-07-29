@@ -6,6 +6,7 @@ import pytest
 from exchangelib.errors import ErrorInvalidChangeKey, TransportError
 
 from outlook_mcp.calendar_service import (
+    _merge_intervals,
     find_free_slots,
     get_event_by_id,
     list_events_for_range,
@@ -156,10 +157,40 @@ class FakeFreeBusyView:
         self.calendar_events = calendar_events
 
 
+class FakeProtocol:
+    """Scriptable protocol.get_free_busy_info for the "other participant" path.
+
+    results_by_email maps email -> either a FakeFreeBusyView (success), an
+    Exception instance to *raise* (mimics errors not in exchangelib's
+    ERRORS_TO_CATCH_IN_RESPONSE, e.g. ErrorNoFreeBusyAccess), or an Exception
+    instance wrapped in _Yielded to be *returned as a value* instead of raised
+    (mimics ERRORS_TO_CATCH_IN_RESPONSE errors, e.g. ErrorMailRecipientNotFound).
+    """
+
+    def __init__(self, results_by_email=None):
+        self.results_by_email = results_by_email or {}
+        self.calls = []
+
+    def get_free_busy_info(self, accounts, start, end, **_kwargs):
+        email, _attendee_type, _exclude_conflicts = accounts[0]
+        self.calls.append(email)
+        result = self.results_by_email[email]
+        if isinstance(result, _Yielded):
+            return [result.exc]
+        if isinstance(result, Exception):
+            raise result
+        return [result]
+
+
+class _Yielded:
+    def __init__(self, exc):
+        self.exc = exc
+
+
 class FreeSlotsAccount:
-    def __init__(self):
+    def __init__(self, protocol=None):
         self.primary_smtp_address = "user@example.com"
-        self.protocol = object()
+        self.protocol = protocol or FakeProtocol()
         self.default_timezone = ZoneInfo("UTC")
 
 
@@ -209,3 +240,185 @@ def test_find_free_slots_translates_transport_errors():
     ):
         with pytest.raises(ConnectionUnavailableError):
             find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 30, make_config())
+
+
+def _own_view(busy=None):
+    working_hours = [FakeWorkingPeriod(["Wednesday"], time(9, 0), time(18, 0))]
+    return FakeFreeBusyView(working_hours, busy or [])
+
+
+def test_find_free_slots_without_emails_keeps_previous_shape():
+    account = FreeSlotsAccount()
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(account, date(2026, 7, 15), 60, make_config())
+
+    assert result["has_more"] is False
+    assert result["unavailable"] == []
+    assert account.protocol.calls == []
+
+
+def test_find_free_slots_intersects_busy_of_other_participant():
+    account = FreeSlotsAccount(
+        protocol=FakeProtocol(
+            {
+                "colleague@example.com": FakeFreeBusyView(
+                    [],
+                    [FakeCalendarEvent(utc_dt(2026, 7, 15, 11, 0), utc_dt(2026, 7, 15, 12, 0))],  # 14:00-15:00 Moscow
+                )
+            }
+        )
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 60, make_config(), emails=["colleague@example.com"]
+        )
+
+    starts = [s["start"] for s in result["slots"]]
+    assert "2026-07-15T14:00:00+03:00" not in starts
+    assert "2026-07-15T09:00:00+03:00" in starts
+    assert result["unavailable"] == []
+
+
+def test_find_free_slots_own_mailbox_always_included():
+    own_view = _own_view(busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 6, 0), utc_dt(2026, 7, 15, 15, 0))])
+    account = FreeSlotsAccount(
+        protocol=FakeProtocol({"colleague@example.com": FakeFreeBusyView([], [])})
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 30, make_config(), emails=["colleague@example.com"]
+        )
+
+    assert result["slots"] == []
+
+
+def test_find_free_slots_working_hours_come_from_own_mailbox():
+    own_view = _own_view()  # 09:00-18:00 Wednesday
+    colleague_view = FakeFreeBusyView(
+        [FakeWorkingPeriod(["Wednesday"], time(9, 0), time(13, 0))], []
+    )
+    account = FreeSlotsAccount(protocol=FakeProtocol({"colleague@example.com": colleague_view}))
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 60, make_config(), emails=["colleague@example.com"]
+        )
+
+    starts = [s["start"] for s in result["slots"]]
+    assert any(s >= "2026-07-15T13:00:00+03:00" for s in starts)
+
+
+def test_find_free_slots_unavailable_email_is_skipped_not_fatal():
+    from exchangelib.errors import ErrorNoFreeBusyAccess
+
+    account = FreeSlotsAccount(
+        protocol=FakeProtocol(
+            {
+                "bad@example.com": ErrorNoFreeBusyAccess("no access"),
+                "good@example.com": FakeFreeBusyView(
+                    [],
+                    [FakeCalendarEvent(utc_dt(2026, 7, 15, 11, 0), utc_dt(2026, 7, 15, 12, 0))],
+                ),
+            }
+        )
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account,
+            date(2026, 7, 15),
+            60,
+            make_config(),
+            emails=["bad@example.com", "good@example.com"],
+        )
+
+    assert result["unavailable"] == [{"email": "bad@example.com", "reason": ANY_STR}]
+    starts = [s["start"] for s in result["slots"]]
+    assert "2026-07-15T14:00:00+03:00" not in starts
+
+
+class ANY_STR_TYPE:
+    def __eq__(self, other):
+        return isinstance(other, str) and len(other) > 0
+
+
+ANY_STR = ANY_STR_TYPE()
+
+
+def test_find_free_slots_unavailable_when_result_is_exception_instance():
+    from exchangelib.errors import ErrorMailRecipientNotFound
+
+    account = FreeSlotsAccount(
+        protocol=FakeProtocol({"unknown@example.com": _Yielded(ErrorMailRecipientNotFound("nope"))})
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 30, make_config(), emails=["unknown@example.com"]
+        )
+
+    assert result["unavailable"] == [{"email": "unknown@example.com", "reason": ANY_STR}]
+
+
+def test_find_free_slots_all_emails_unavailable_falls_back_to_own_calendar():
+    from exchangelib.errors import ErrorNoFreeBusyAccess
+
+    account = FreeSlotsAccount(
+        protocol=FakeProtocol(
+            {
+                "a@example.com": ErrorNoFreeBusyAccess("no access"),
+                "b@example.com": ErrorNoFreeBusyAccess("no access"),
+            }
+        )
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        alone = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 30, make_config())
+        with_emails = find_free_slots(
+            account, date(2026, 7, 15), 30, make_config(), emails=["a@example.com", "b@example.com"]
+        )
+
+    assert with_emails["slots"] == alone["slots"]
+    assert len(with_emails["unavailable"]) == 2
+
+
+def test_find_free_slots_no_working_hours_skips_participant_requests():
+    view = FakeFreeBusyView([FakeWorkingPeriod(["Monday"], time(9, 0), time(18, 0))], [])
+    account = FreeSlotsAccount(protocol=FakeProtocol({"colleague@example.com": FakeFreeBusyView([], [])}))
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=view):
+        # 2026-07-15 is Wednesday, no working hours defined for it
+        result = find_free_slots(
+            account, date(2026, 7, 15), 30, make_config(), emails=["colleague@example.com"]
+        )
+
+    assert result == {"slots": [], "has_more": False, "unavailable": []}
+    assert account.protocol.calls == []
+
+
+def test_merge_intervals_unions_overlaps():
+    a = datetime(2026, 7, 15, 9, tzinfo=ZoneInfo("UTC"))
+    intervals = [
+        (a, a + timedelta(hours=2)),  # 9-11
+        (a + timedelta(hours=1), a + timedelta(hours=3)),  # 10-12
+        (a + timedelta(hours=5), a + timedelta(hours=6)),  # 14-15
+    ]
+    merged = _merge_intervals(intervals)
+    assert merged == [
+        (a, a + timedelta(hours=3)),
+        (a + timedelta(hours=5), a + timedelta(hours=6)),
+    ]
+
+
+def test_merge_intervals_merges_adjacent():
+    a = datetime(2026, 7, 15, 9, tzinfo=ZoneInfo("UTC"))
+    intervals = [(a, a + timedelta(hours=1)), (a + timedelta(hours=1), a + timedelta(hours=2))]
+    assert _merge_intervals(intervals) == [(a, a + timedelta(hours=2))]
+
+
+def test_get_free_busy_view_for_email_passes_plain_string():
+    protocol = FakeProtocol({"colleague@example.com": FakeFreeBusyView([], [])})
+    account = FreeSlotsAccount(protocol=protocol)
+    start = utc_dt(2026, 7, 15, 0, 0)
+    end = utc_dt(2026, 7, 15, 23, 59)
+
+    from outlook_mcp.calendar_service import _get_free_busy_view_for_email
+
+    _get_free_busy_view_for_email(account, "colleague@example.com", start, end)
+
+    assert protocol.calls == ["colleague@example.com"]

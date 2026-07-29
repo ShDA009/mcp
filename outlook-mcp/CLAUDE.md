@@ -2,8 +2,9 @@
 
 MCP-сервер только для чтения календаря и почты из on-prem Exchange по EWS
 (SOAP/NTLM), для потребителя Cline. Реализация завершена: календарь
-(`list_events`, `get_event`, `find_free_slots`), почта (`list_emails`,
-`get_email`, `search_emails`), структурированная обработка ошибок.
+(`list_events`, `get_event`, `find_free_slots`), адресная книга
+(`resolve_person`), почта (`list_emails`, `get_email`, `search_emails`),
+структурированная обработка ошибок.
 
 ## Структура
 
@@ -38,6 +39,12 @@ MCP-сервер только для чтения календаря и почт
   `list_events_for_range` (диапазон дат), `get_event_by_id` (одиночный item
   по `event_id`, с fallback-разрешением устаревшего ChangeKey) и
   `find_free_slots` (через `exchangelib.services.GetUserAvailability`).
+- `src/outlook_mcp/directory_service.py` — `resolve_person`: поиск email по
+  (частичному) имени через `account.protocol.resolve_names` (EWS
+  `ResolveNames`, поиск по ГАБ). "Ничего не найдено" — штатный исход
+  (`{"candidates": []}`), не ошибка: EWS сам возвращает
+  `ErrorNameResolutionNoResults` как перехваченное значение, а не
+  пробрасывает его (в отличие от ошибок `GetUserAvailability`, см. ниже).
 - `src/outlook_mcp/mail_service.py` — запросы к почтовым папкам
   (`inbox`/`sent`/`drafts`/`junk`/`deleted` через `_FOLDER_ATTRS`):
   `list_emails`, `search_emails` (через `exchangelib.restriction.Q` по
@@ -111,7 +118,50 @@ MCP-сервер только для чтения календаря и почт
   `calendar_service.py` берёт рабочий период для дня недели искомой даты,
   вычитает занятые интервалы и нарезает оставшиеся окна на слоты нужной
   длительности. Если для дня недели не задан `WorkingPeriod` (выходной по
-  настройкам Exchange) — возвращает `{"slots": [], "has_more": false}`, не ошибку.
+  настройкам Exchange) — возвращает `{"slots": [], "has_more": false,
+  "unavailable": []}`, не ошибку.
+- **find_free_slots для нескольких участников** (`emails` в `server.py`/
+  `calendar_service.py`): чужой ящик передаётся в `accounts=` **обычной
+  строкой** (SMTP-адрес), не `Mailbox` — `protocol.py` строит
+  `MailboxData.email` как `account.primary_smtp_address if
+  isinstance(account, Account) else account`, т.е. `str` — поддерживаемый
+  вариант для ящика, которым не владеем.
+  **Один запрос `get_free_busy_info` на каждого участника, не один батч на
+  всех** — это принципиально, не "оптимизировать" обратно. exchangelib
+  отдаёт исключение как *значение* в ответе (не роняя вызов) только для
+  ошибок из `EWSService.ERRORS_TO_CATCH_IN_RESPONSE`
+  (`services/common.py:76`, там есть `ErrorMailRecipientNotFound`), а всё
+  остальное — `ErrorNoFreeBusyAccess`, `ErrorProxyRequestNotAllowed`,
+  `ErrorMailboxMoved`, `ErrorNonExistentMailbox` — **пробрасывается** и в
+  батче убило бы результат сразу по всем участникам. Раз по требованию
+  недоступный участник должен быть пропущен, а не ронять вызов — только
+  отдельный запрos на каждый email с собственным `try/except`
+  (`_collect_participant_views` в `calendar_service.py`) даёт нужную
+  изоляцию. Оба режима отказа (брошенное исключение и `Exception`,
+  вернувшийся как значение результата) обрабатываются одинаково.
+  Рабочие часы (`WorkingPeriod`) всегда берутся из **своего** `own_view`,
+  чужие рабочие часы не пересекаются — так решено с пользователем: слот
+  должен помещаться в собственный рабочий день. Свой ящик всегда участвует
+  в пересечении занятости, даже когда передан `emails` — иначе слот мог бы
+  попасть на время, когда сам пользователь занят. Отказ по своему ящику
+  (`_get_free_busy_view`) остаётся фатальным (`translate_ews_error`) — без
+  него нет ни рабочего окна, ни смысла продолжать. Недоступные участники
+  попадают в поле `unavailable` (`{"email": ..., "reason": ...}`), которое
+  присутствует в ответе всегда (пустой список в одиночном режиме), а не
+  только когда что-то пошло не так — стабильная форма ответа проще для
+  LLM-клиента, чем условный ключ.
+- **Зависимость `mcp` закреплена как `mcp>=1.2.0,<2.0.0`** (`pyproject.toml`).
+  Причина: на PyPI под именем `mcp` сейчас существует посторонний пакет
+  `mcp==2.0.0` (не Anthropic MCP SDK — другие зависимости, `httpx2`/
+  `mcp-types`), который не содержит `mcp.server.fastmcp`. Без верхней
+  границы `uv lock` резолвил именно его, и `server.py` падал на импорте.
+  **Важно:** эта граница не даёт узнать, когда выйдет настоящий Anthropic
+  SDK `2.0.0+` — она молча блокирует апгрейд. Если/когда официальный `mcp`
+  выпустит мажор 2.x, нужно вручную: (1) проверить, что пакет с этим именем
+  на PyPI — снова официальный Anthropic SDK, а не сторонний тёзка; (2)
+  поднять границу (`<2.0.0` → `<3.0.0` и т.д.); (3) прогнать полный набор
+  тестов и ручную проверку — `fastmcp`-API мог измениться в мажорном
+  релизе. Не снимать границу совсем и не поднимать её не глядя.
 - **list_events/list_emails/search_emails и лимиты**: изначальная реализация
   делала `list(qs)` — материализовывала **весь** результат EWS-запроса на
   клиенте, потом резала по `limit`. На живом Exchange с непустой папкой это
