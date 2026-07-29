@@ -112,6 +112,7 @@ def find_free_slots(
     config: Config,
     emails: list[str] | None = None,
     include_self: bool = True,
+    debug: bool = False,
 ) -> dict:
     if not include_self and not emails:
         raise InvalidArgumentError(
@@ -129,30 +130,62 @@ def find_free_slots(
     except Exception as exc:
         raise translate_ews_error(exc) from exc
 
+    # Own view is fetched (and its failure stays fatal) regardless of
+    # include_self: it's the source of the working-hours window even when
+    # its busy time is excluded from the intersection.
+    labeled_views: list[tuple[str, object]] = [(f"self ({getattr(account, 'primary_smtp_address', 'self')})", own_view)]
+
     working_period = _working_period_for_weekday(own_view, target_date.strftime("%A"))
     if working_period is None:
-        return {"slots": [], "tentative_slots": [], "has_more": False, "unavailable": []}
+        result = {
+            "slots": [],
+            "tentative_slots": [],
+            "has_more": False,
+            "unavailable": [],
+            "reason": "no_working_hours_for_weekday",
+        }
+        if debug:
+            result["diagnostics"] = _build_diagnostics(
+                tz=tz,
+                day_start=day_start,
+                day_end=day_end,
+                target_date=target_date,
+                labeled_views=labeled_views,
+                counted_in_busy={labeled_views[0][0]: False},
+                working_period=None,
+                duration_min=duration_min,
+                include_self=include_self,
+                hard_busy=[],
+                tentative_busy=[],
+                free_windows=[],
+                slot_grid_count=0,
+            )
+        return result
 
     work_start = datetime.combine(target_date, working_period[0], tzinfo=tz)
     work_end = datetime.combine(target_date, working_period[1], tzinfo=tz)
 
-    views = [own_view] if include_self else []
+    counted_in_busy = {labeled_views[0][0]: include_self}
     unavailable: list[dict] = []
     if emails:
         other_views, unavailable = _collect_participant_views(account, emails, day_start, day_end)
-        views.extend(other_views)
+        for email, view in other_views:
+            labeled_views.append((email, view))
+            counted_in_busy[email] = True
+
+    busy_views = [view for label, view in labeled_views if counted_in_busy.get(label)]
 
     hard_busy = _merge_intervals(
         [
             interval
-            for view in views
+            for view in busy_views
             for interval in _busy_intervals_within(view, work_start, work_end, tz, _HARD_BUSY_TYPES)
         ]
     )
     tentative_busy = _merge_intervals(
         [
             interval
-            for view in views
+            for view in busy_views
             for interval in _busy_intervals_within(
                 view, work_start, work_end, tz, frozenset({_TENTATIVE_BUSY_TYPE})
             )
@@ -178,12 +211,60 @@ def find_free_slots(
             else:
                 slots.append(entry)
 
-    return {
+    reason = _compute_reason(
+        slots=slots,
+        tentative_slots=tentative_slots,
+        free_windows=free_windows,
+        emails=emails,
+        unavailable=unavailable,
+        include_self=include_self,
+    )
+
+    result = {
         "slots": slots,
         "tentative_slots": tentative_slots,
         "has_more": False,
         "unavailable": unavailable,
+        "reason": reason,
     }
+    if debug:
+        result["diagnostics"] = _build_diagnostics(
+            tz=tz,
+            day_start=day_start,
+            day_end=day_end,
+            target_date=target_date,
+            labeled_views=labeled_views,
+            counted_in_busy=counted_in_busy,
+            working_period=working_period,
+            duration_min=duration_min,
+            include_self=include_self,
+            hard_busy=hard_busy,
+            tentative_busy=tentative_busy,
+            free_windows=free_windows,
+            slot_grid_count=len(slots) + len(tentative_slots),
+            work_start=work_start,
+            work_end=work_end,
+        )
+        result["diagnostics"]["unavailable"] = unavailable
+    return result
+
+
+def _compute_reason(
+    *, slots: list, tentative_slots: list, free_windows: list, emails, unavailable: list, include_self: bool
+) -> str:
+    # Checked before "ok": if include_self=False and every participant's
+    # free/busy failed, nobody's calendar was actually checked - a non-empty
+    # "slots" here would be a false positive (the whole working day, unfiltered
+    # by anyone's busy time), not a genuine answer.
+    if emails and not include_self and len(unavailable) == len(emails):
+        return "all_participants_unavailable"
+    if slots:
+        return "ok"
+    if tentative_slots:
+        return "only_tentative"
+    if free_windows:
+        return "no_window_fits_duration"
+    return "fully_busy"
 
 
 def _get_free_busy_view(account, window_start: datetime, window_end: datetime):
@@ -236,7 +317,7 @@ def _collect_participant_views(
     emails: list[str],
     window_start: datetime,
     window_end: datetime,
-) -> tuple[list, list[dict]]:
+) -> tuple[list[tuple[str, object]], list[dict]]:
     """Fetch a FreeBusyView per email, isolating failures per participant.
 
     One EWS request per email is deliberate: exchangelib only returns
@@ -245,8 +326,11 @@ def _collect_participant_views(
     everything else (ErrorNoFreeBusyAccess, ErrorProxyRequestNotAllowed,
     ErrorMailboxMoved, ...) is raised and would abort a single batched call
     for every participant. Do not "optimize" this back into one request.
+
+    Returns (email, view) pairs rather than bare views so diagnostics can
+    attribute each view back to its participant.
     """
-    views = []
+    views: list[tuple[str, object]] = []
     unavailable: list[dict] = []
     for email in emails:
         try:
@@ -258,7 +342,14 @@ def _collect_participant_views(
         if view is None:
             unavailable.append({"email": email, "reason": "No free/busy data returned for this mailbox"})
             continue
-        views.append(view)
+        logger.info(
+            "free/busy view for %s: view_type=%s events=%d merged_len=%d",
+            email,
+            getattr(view, "view_type", None),
+            len(getattr(view, "calendar_events", None) or []),
+            len(getattr(view, "merged", None) or ""),
+        )
+        views.append((email, view))
     return views, unavailable
 
 
@@ -291,10 +382,14 @@ def _busy_intervals_within(
             continue
         start = calendar_event.start
         end = calendar_event.end
+        # GetUserAvailability's fake account (services/get_user_availability.py:
+        # _elem_to_obj) sets default_timezone=<the tz we requested>, so a naive
+        # datetime here is already wall-clock time in that tz, not UTC. Tagging
+        # it UTC would shift it by the zone offset.
         if start.tzinfo is None:
-            start = start.replace(tzinfo=ZoneInfo("UTC"))
+            start = start.replace(tzinfo=tz)
         if end.tzinfo is None:
-            end = end.replace(tzinfo=ZoneInfo("UTC"))
+            end = end.replace(tzinfo=tz)
         start = start.astimezone(tz)
         end = end.astimezone(tz)
         if end > window_start and start < window_end:
@@ -309,6 +404,129 @@ def _overlaps_any(start: datetime, end: datetime, intervals: list) -> bool:
     does not count as an overlap.
     """
     return any(interval_start < end and start < interval_end for interval_start, interval_end in intervals)
+
+
+_MERGED_LEGEND = "0=Free 1=Tentative 2=Busy 3=OOF 4=NoData 5=WorkingElsewhere"
+_RAW_EVENTS_CAP = 100
+
+
+def _format_interval(start: datetime, end: datetime) -> str:
+    return f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}"
+
+
+def _describe_intervals(intervals: list) -> list[str]:
+    return [_format_interval(start, end) for start, end in intervals]
+
+
+def _view_diagnostics(
+    label: str,
+    view,
+    tz: ZoneInfo,
+    counted_in_busy: bool,
+    work_start: datetime | None,
+    work_end: datetime | None,
+) -> dict:
+    """Build a debug-only snapshot of one participant's FreeBusyView.
+
+    Never raises: every field is read defensively so a malformed/unexpected
+    view degrades the diagnostics, not the actual find_free_slots answer.
+    """
+    try:
+        view_present = view is not None
+        calendar_events = getattr(view, "calendar_events", None) or []
+        merged = getattr(view, "merged", None)
+
+        raw_events = []
+        histogram: dict[str, int] = {}
+        for calendar_event in calendar_events[:_RAW_EVENTS_CAP]:
+            busy_type = getattr(calendar_event, "busy_type", None) or _DEFAULT_BUSY_TYPE
+            histogram[busy_type] = histogram.get(busy_type, 0) + 1
+            start = calendar_event.start
+            end = calendar_event.end
+            raw_start_repr = repr(start)
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=tz)
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=tz)
+            raw_events.append(
+                {
+                    "start": start.astimezone(tz).isoformat(),
+                    "end": end.astimezone(tz).isoformat(),
+                    "busy_type": busy_type,
+                    "raw_start_repr": raw_start_repr,
+                }
+            )
+
+        hard_after_filter: list[str] = []
+        tentative_after_filter: list[str] = []
+        if work_start is not None and work_end is not None:
+            hard_after_filter = _describe_intervals(
+                _busy_intervals_within(view, work_start, work_end, tz, _HARD_BUSY_TYPES)
+            )
+            tentative_after_filter = _describe_intervals(
+                _busy_intervals_within(view, work_start, work_end, tz, frozenset({_TENTATIVE_BUSY_TYPE}))
+            )
+
+        return {
+            "label": label,
+            "counted_in_busy": counted_in_busy,
+            "view_present": view_present,
+            "view_type": getattr(view, "view_type", None),
+            "working_hours_present": bool(getattr(view, "working_hours", None)),
+            "calendar_events_count": len(calendar_events),
+            "merged_present": bool(merged),
+            "merged_length": len(merged) if merged else 0,
+            "merged_sample": (merged or "")[:96],
+            "merged_legend": _MERGED_LEGEND,
+            "raw_events": raw_events,
+            "raw_events_truncated": len(calendar_events) > _RAW_EVENTS_CAP,
+            "busy_type_histogram": histogram,
+            "hard_busy_after_filter": hard_after_filter,
+            "tentative_after_filter": tentative_after_filter,
+        }
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never break the real answer
+        return {"label": label, "diagnostics_error": f"{type(exc).__name__}: {exc}"}
+
+
+def _build_diagnostics(
+    tz: ZoneInfo,
+    day_start: datetime,
+    day_end: datetime,
+    target_date: date,
+    labeled_views: list[tuple[str, object]],
+    counted_in_busy: dict[str, bool],
+    working_period,
+    duration_min: int,
+    include_self: bool,
+    hard_busy: list,
+    tentative_busy: list,
+    free_windows: list,
+    slot_grid_count: int,
+    work_start: datetime | None = None,
+    work_end: datetime | None = None,
+) -> dict:
+    own_label = labeled_views[0][0] if labeled_views else None
+    return {
+        "timezone": str(tz),
+        "requested_window": {"start": day_start.isoformat(), "end": day_end.isoformat()},
+        "weekday": target_date.strftime("%A"),
+        "working_hours_source": own_label,
+        "working_window": (
+            {"start": working_period[0].strftime("%H:%M"), "end": working_period[1].strftime("%H:%M")}
+            if working_period
+            else None
+        ),
+        "duration_min": duration_min,
+        "include_self": include_self,
+        "views": [
+            _view_diagnostics(label, view, tz, counted_in_busy.get(label, False), work_start, work_end)
+            for label, view in labeled_views
+        ],
+        "merged_hard_busy": _describe_intervals(hard_busy),
+        "merged_tentative": _describe_intervals(tentative_busy),
+        "free_windows": _describe_intervals(free_windows),
+        "slot_grid_count": slot_grid_count,
+    }
 
 
 def _subtract_intervals(window_start: datetime, window_end: datetime, busy: list) -> list:

@@ -164,6 +164,16 @@ class FakeCalendarEventNoBusyType:
 
 
 class FakeFreeBusyView:
+    def __init__(self, working_hours, calendar_events, view_type=None, merged=None):
+        self.working_hours = working_hours
+        self.calendar_events = calendar_events
+        self.view_type = view_type
+        self.merged = merged
+
+
+class FakeFreeBusyViewNoOptionalAttrs:
+    """Mimics a view lacking view_type/merged attributes entirely."""
+
     def __init__(self, working_hours, calendar_events):
         self.working_hours = working_hours
         self.calendar_events = calendar_events
@@ -399,7 +409,13 @@ def test_find_free_slots_no_working_hours_skips_participant_requests():
             account, date(2026, 7, 15), 30, make_config(), emails=["colleague@example.com"]
         )
 
-    assert result == {"slots": [], "tentative_slots": [], "has_more": False, "unavailable": []}
+    assert result == {
+        "slots": [],
+        "tentative_slots": [],
+        "has_more": False,
+        "unavailable": [],
+        "reason": "no_working_hours_for_weekday",
+    }
     assert account.protocol.calls == []
 
 
@@ -682,3 +698,239 @@ def test_find_free_slots_include_self_false_ignores_own_tentative():
         )
 
     assert result["tentative_slots"] == []
+
+
+# --- reason -----------------------------------------------------------------
+
+
+def test_reason_ok_when_slots_found():
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+    assert result["reason"] == "ok"
+
+
+def test_reason_no_working_hours_for_weekday():
+    view = FakeFreeBusyView([FakeWorkingPeriod(["Monday"], time(9, 0), time(18, 0))], [])
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 30, make_config())
+    assert result["reason"] == "no_working_hours_for_weekday"
+
+
+def test_reason_fully_busy():
+    own_view = _own_view(busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 6, 0), utc_dt(2026, 7, 15, 15, 0))])
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 30, make_config())
+    assert result["reason"] == "fully_busy"
+
+
+def test_reason_no_window_fits_duration():
+    # Work 09:00-18:00, busy 09:30-18:00 -> only a 30-min free window remains,
+    # but duration_min=60 doesn't fit into it.
+    own_view = _own_view(busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 6, 30), utc_dt(2026, 7, 15, 15, 0))])
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+    assert result["slots"] == []
+    assert result["reason"] == "no_window_fits_duration"
+
+
+def test_reason_only_tentative():
+    own_view = _own_view(
+        busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 6, 0), utc_dt(2026, 7, 15, 15, 0), busy_type="Tentative")]
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 30, make_config())
+    assert result["slots"] == []
+    assert len(result["tentative_slots"]) > 0
+    assert result["reason"] == "only_tentative"
+
+
+def test_reason_all_participants_unavailable():
+    from exchangelib.errors import ErrorNoFreeBusyAccess
+
+    account = FreeSlotsAccount(
+        protocol=FakeProtocol({"a@example.com": ErrorNoFreeBusyAccess("no access")})
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 30, make_config(), emails=["a@example.com"], include_self=False
+        )
+    assert result["reason"] == "all_participants_unavailable"
+
+
+def test_reason_present_without_debug():
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config(), debug=False)
+    assert "reason" in result
+    assert "diagnostics" not in result
+
+
+# --- diagnostics --------------------------------------------------------------
+
+
+def test_find_free_slots_without_debug_has_no_diagnostics_key():
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+    assert "diagnostics" not in result
+
+
+def test_find_free_slots_debug_includes_diagnostics_key():
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config(), debug=True)
+    assert "diagnostics" in result
+
+
+def test_diagnostics_reports_working_hours_source_and_window():
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config(), debug=True)
+    diag = result["diagnostics"]
+    assert "self" in diag["working_hours_source"]
+    assert diag["working_window"] == {"start": "09:00", "end": "18:00"}
+
+
+def test_diagnostics_lists_one_view_entry_per_participant_plus_self():
+    account = FreeSlotsAccount(
+        protocol=FakeProtocol({"colleague@example.com": FakeFreeBusyView([], [])})
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 60, make_config(), emails=["colleague@example.com"], debug=True
+        )
+    labels = [v["label"] for v in result["diagnostics"]["views"]]
+    assert len(labels) == 2
+    assert "colleague@example.com" in labels
+
+
+def test_diagnostics_marks_own_view_not_counted_when_include_self_false():
+    account = FreeSlotsAccount(
+        protocol=FakeProtocol({"colleague@example.com": FakeFreeBusyView([], [])})
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account,
+            date(2026, 7, 15),
+            60,
+            make_config(),
+            emails=["colleague@example.com"],
+            include_self=False,
+            debug=True,
+        )
+    views_by_label = {v["label"]: v for v in result["diagnostics"]["views"]}
+    own_label = [label for label in views_by_label if label.startswith("self")][0]
+    assert views_by_label[own_label]["counted_in_busy"] is False
+    assert views_by_label["colleague@example.com"]["counted_in_busy"] is True
+
+
+def test_diagnostics_reports_view_type_and_merged_length():
+    colleague_view = FakeFreeBusyView([], [], view_type="MergedOnly", merged="0022220000")
+    account = FreeSlotsAccount(protocol=FakeProtocol({"colleague@example.com": colleague_view}))
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 60, make_config(), emails=["colleague@example.com"], debug=True
+        )
+    colleague_diag = next(v for v in result["diagnostics"]["views"] if v["label"] == "colleague@example.com")
+    assert colleague_diag["view_type"] == "MergedOnly"
+    assert colleague_diag["merged_present"] is True
+    assert colleague_diag["merged_length"] == 10
+    assert colleague_diag["merged_sample"] == "0022220000"
+    assert colleague_diag["calendar_events_count"] == 0
+
+
+def test_diagnostics_reports_raw_events_in_local_timezone():
+    colleague_view = FakeFreeBusyView(
+        [], [FakeCalendarEvent(utc_dt(2026, 7, 15, 11, 0), utc_dt(2026, 7, 15, 12, 0), busy_type="Busy")]
+    )
+    account = FreeSlotsAccount(protocol=FakeProtocol({"colleague@example.com": colleague_view}))
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 60, make_config(), emails=["colleague@example.com"], debug=True
+        )
+    colleague_diag = next(v for v in result["diagnostics"]["views"] if v["label"] == "colleague@example.com")
+    assert colleague_diag["raw_events"][0]["start"] == "2026-07-15T14:00:00+03:00"
+
+
+def test_diagnostics_busy_type_histogram_counts_free_and_busy():
+    colleague_view = FakeFreeBusyView(
+        [],
+        [
+            FakeCalendarEvent(utc_dt(2026, 7, 15, 7, 0), utc_dt(2026, 7, 15, 8, 0), busy_type="Busy"),
+            FakeCalendarEvent(utc_dt(2026, 7, 15, 9, 0), utc_dt(2026, 7, 15, 10, 0), busy_type="Free"),
+        ],
+    )
+    account = FreeSlotsAccount(protocol=FakeProtocol({"colleague@example.com": colleague_view}))
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 60, make_config(), emails=["colleague@example.com"], debug=True
+        )
+    colleague_diag = next(v for v in result["diagnostics"]["views"] if v["label"] == "colleague@example.com")
+    assert colleague_diag["busy_type_histogram"] == {"Busy": 1, "Free": 1}
+
+
+def test_diagnostics_hard_busy_differs_from_raw_when_clipped_to_working_hours():
+    # Event starts before working hours (06:00 Moscow) and should be clipped to 09:00.
+    colleague_view = FakeFreeBusyView(
+        [], [FakeCalendarEvent(utc_dt(2026, 7, 15, 3, 0), utc_dt(2026, 7, 15, 8, 0), busy_type="Busy")]
+    )
+    account = FreeSlotsAccount(protocol=FakeProtocol({"colleague@example.com": colleague_view}))
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 60, make_config(), emails=["colleague@example.com"], debug=True
+        )
+    colleague_diag = next(v for v in result["diagnostics"]["views"] if v["label"] == "colleague@example.com")
+    assert colleague_diag["raw_events"][0]["start"] == "2026-07-15T06:00:00+03:00"
+    assert colleague_diag["hard_busy_after_filter"] == ["09:00-11:00"]
+
+
+def test_diagnostics_survives_view_without_optional_attributes():
+    colleague_view = FakeFreeBusyViewNoOptionalAttrs([], [])
+    account = FreeSlotsAccount(protocol=FakeProtocol({"colleague@example.com": colleague_view}))
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 60, make_config(), emails=["colleague@example.com"], debug=True
+        )
+    colleague_diag = next(v for v in result["diagnostics"]["views"] if v["label"] == "colleague@example.com")
+    assert "diagnostics_error" not in colleague_diag
+    assert colleague_diag["view_type"] is None
+
+
+def test_diagnostics_truncates_raw_events_over_cap():
+    events = [
+        FakeCalendarEvent(
+            utc_dt(2026, 7, 15, 0, 0) + timedelta(minutes=i),
+            utc_dt(2026, 7, 15, 0, 0) + timedelta(minutes=i + 1),
+            busy_type="Busy",
+        )
+        for i in range(150)
+    ]
+    colleague_view = FakeFreeBusyView([], events)
+    account = FreeSlotsAccount(protocol=FakeProtocol({"colleague@example.com": colleague_view}))
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 60, make_config(), emails=["colleague@example.com"], debug=True
+        )
+    colleague_diag = next(v for v in result["diagnostics"]["views"] if v["label"] == "colleague@example.com")
+    assert len(colleague_diag["raw_events"]) == 100
+    assert colleague_diag["raw_events_truncated"] is True
+
+
+def test_diagnostics_included_when_no_working_hours():
+    view = FakeFreeBusyView([FakeWorkingPeriod(["Monday"], time(9, 0), time(18, 0))], [])
+    account = FreeSlotsAccount(protocol=FakeProtocol({"colleague@example.com": FakeFreeBusyView([], [])}))
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=view):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 30, make_config(), emails=["colleague@example.com"], debug=True
+        )
+    assert result["diagnostics"]["working_window"] is None
+    assert account.protocol.calls == []
+
+
+def test_diagnostics_includes_unavailable():
+    from exchangelib.errors import ErrorNoFreeBusyAccess
+
+    account = FreeSlotsAccount(
+        protocol=FakeProtocol({"bad@example.com": ErrorNoFreeBusyAccess("no access")})
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 30, make_config(), emails=["bad@example.com"], debug=True
+        )
+    assert result["diagnostics"]["unavailable"] == result["unavailable"]

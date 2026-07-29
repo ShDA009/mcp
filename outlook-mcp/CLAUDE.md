@@ -216,6 +216,75 @@ MCP-сервер только для чтения календаря и почт
   `InvalidArgumentError` **до** любых обращений к EWS: вернуть в этом
   случае «весь день свободен» было бы неотличимо от настоящего результата
   для LLM-клиента.
+- **find_free_slots: наивное время от `GetUserAvailability` — не UTC.**
+  Найден на живом Exchange баг: `_busy_intervals_within` помечал naive
+  datetime как `UTC` перед конвертацией в целевую таймзону — потенциальный
+  сдвиг на величину offset (для `Europe/Moscow` — 3 часа). Причина: fake
+  account в `GetUserAvailability._elem_to_obj`
+  (`exchangelib/services/get_user_availability.py`) —
+  `namedtuple("Account", ["default_timezone"])(default_timezone=self.tzinfo)`,
+  где `self.tzinfo` — таймзона **запроса** (`day_start.tzinfo`, т.е.
+  `EWSTimeZone.from_zoneinfo(config.timezone)`). `DateTimeField.from_xml`
+  (`exchangelib/fields.py`) для naive-значений делает
+  `local_dt.replace(tzinfo=account.default_timezone)` — то есть naive время
+  от EWS уже wall-clock **в запрошенной таймзоне**, не в UTC. Исправлено:
+  `start.replace(tzinfo=tz)` вместо `ZoneInfo("UTC")` (то же для `end`).
+  На практике ветка обычно не срабатывает (exchangelib чаще всего сам
+  проставляет offset), поэтому баг был незаметен на своём календаре — но
+  мог тихо сработать для чужого free/busy.
+- **find_free_slots и `reason`**: поле присутствует в ответе **всегда**
+  (не только при `debug`) и объясняет пустой `slots`, вместо того чтобы
+  заставлять читателя (LLM или человека) гадать «выходной это или всё
+  занято». Значения и порядок проверки в `_compute_reason`:
+  `all_participants_unavailable` (проверяется **первым**, до `slots` —
+  см. следующий пункт про связанный latent-баг) → `ok` (`slots` непуст) →
+  `only_tentative` → `no_window_fits_duration` (свободные окна есть, но
+  короче `duration_min`) → `fully_busy`. Порядок важен: `all_participants_
+  unavailable` обязан идти раньше `ok`, иначе он никогда не сработает
+  (объясняется ниже).
+- **find_free_slots: latent-баг с `include_self=False` + все участники
+  недоступны.** Если при `include_self=False` free/busy не удалось прочитать
+  ни у одного email из `unavailable`, множество `busy_views` пусто —
+  `hard_busy`/`tentative_busy` пусты, и весь рабочий день считается
+  свободным. Это ложноположительный результат: календарь фактически не
+  проверялся ни у кого. Раньше это было неотличимо от настоящего «весь
+  день свободен». Теперь `_compute_reason` ловит этот случай **до**
+  проверки `slots` и возвращает `"all_participants_unavailable"` — сами
+  `slots` при этом всё ещё содержат (некорректный) полный рабочий день,
+  но `reason` предупреждает вызывающего не доверять им. Тест:
+  `test_reason_all_participants_unavailable`.
+- **find_free_slots и `debug=True` (диагностика).** Добавлен по итогам
+  расследования: `find_free_slots(emails=[...], include_self=False)` на
+  живом Exchange отдавал `reason: "fully_busy"` для коллеги, чей Outlook
+  явно показывал промежутки между встречами — а `unavailable` был пуст
+  (то есть `FreeBusyView` пришёл, но был неверно интерпретирован).
+  Диагностировать вслепую невозможно: код читает **только**
+  `view.calendar_events` и полностью игнорирует `view.view_type` и
+  `view.merged` — строку цифр из `FREE_BUSY_CHOICES`
+  (`exchangelib/fields.py`: `0=Free 1=Tentative 2=Busy 3=OOF 4=NoData
+  5=WorkingElsewhere`), которую EWS может отдать вместо детальных событий
+  (`FreeBusyView.merged`, `properties.py`) — обычно из-за пониженного
+  уровня прав на free/busy чужого ящика (не ошибка, поэтому и не попадает
+  в `unavailable`). При `debug=True` `_build_diagnostics`/`_view_diagnostics`
+  собирают на **каждого** участника (включая `"self (<email>)"`, даже
+  когда `counted_in_busy=False`): `view_type`, наличие и длину `merged`,
+  количество и содержимое `raw_events` в локальной таймзоне с их
+  `busy_type`, гистограмму `busy_type`, и интервалы до/после отсечения по
+  рабочему окну (`hard_busy_after_filter`) — так по одной live-проверке
+  видно, пришли ли детальные события вообще, и не разошлись ли `raw_events`
+  с посчитанными интервалами. `_collect_participant_views` для этого
+  возвращает пары `(email, view)`, а не голые views — иначе диагностику
+  нельзя было бы привязать к конкретному участнику.
+  `_view_diagnostics` **никогда не поднимает исключение** — деградирует в
+  `{"label": ..., "diagnostics_error": ...}`, потому что диагностика
+  существует для отладки сломанного пути и не должна стать вторым
+  источником отказа. `raw_events` обрезаются на 100 записей
+  (`raw_events_truncated`). Флаг `debug` — не под тестами production-трафика:
+  диагностика добавляет заметный объём в ответ (десятки событий × несколько
+  участников), поэтому по умолчанию `False`. Следующий шаг после
+  добавления диагностики — по её данным (в частности, `merged_present` при
+  `calendar_events_count: 0` для чужого ящика) написать декодер
+  `merged`-строки как fallback, когда детальные события Exchange не отдаёт.
 - **Зависимость `mcp` закреплена как `mcp>=1.2.0,<2.0.0`** (`pyproject.toml`).
   Причина: на PyPI под именем `mcp` сейчас существует посторонний пакет
   `mcp==2.0.0` (не Anthropic MCP SDK — другие зависимости, `httpx2`/

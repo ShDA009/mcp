@@ -117,6 +117,7 @@ def find_free_slots(
     duration_min: int,
     emails: list[str] | None = None,
     include_self: bool = True,
+    debug: bool = False,
 ) -> dict:
     """Find free time slots of the given duration (minutes) within working hours on a given date (YYYY-MM-DD).
 
@@ -138,6 +139,18 @@ def find_free_slots(
     are free except that someone has a tentatively accepted meeting there -
     they are real candidates worth proposing, but mention that the time is
     tentative. The two lists never overlap.
+
+    The result always includes "reason", explaining an empty "slots" list:
+    "ok" (slots found), "no_working_hours_for_weekday" (weekend/non-working
+    day), "fully_busy", "no_window_fits_duration" (free time exists but no
+    window is long enough), "only_tentative" (only tentative slots exist), or
+    "all_participants_unavailable" (include_self=false and every email failed
+    - nobody's calendar could actually be checked).
+
+    debug - when true, adds a "diagnostics" field with per-participant
+    free/busy details (raw events, busy-type counts, working hours source)
+    for troubleshooting an unexpected result. Leave false for normal use -
+    it adds a lot of data to the response.
     """
     try:
         day = _parse_date(target_date, "target_date")
@@ -145,18 +158,27 @@ def find_free_slots(
             raise InvalidArgumentError(f"Invalid duration_min {duration_min!r}, must be a positive integer")
         if not isinstance(include_self, bool):
             raise InvalidArgumentError(f"Invalid include_self {include_self!r}, expected a boolean")
+        if not isinstance(debug, bool):
+            raise InvalidArgumentError(f"Invalid debug {debug!r}, expected a boolean")
         participants = _validate_emails(emails)
         account = get_account()
         result = find_free_slots_svc(
-            account, day, duration_min, _config, emails=participants, include_self=include_self
+            account,
+            day,
+            duration_min,
+            _config,
+            emails=participants,
+            include_self=include_self,
+            debug=debug,
         )
         logger.info(
             "find_free_slots returned %d slot(s), %d tentative, for %d extra participant(s), "
-            "%d unavailable (include_self=%s)",
+            "%d unavailable, reason=%s (include_self=%s)",
             len(result["slots"]),
             len(result["tentative_slots"]),
             len(participants),
             len(result["unavailable"]),
+            result["reason"],
             include_self,
         )
         return result
