@@ -94,7 +94,7 @@ def test_validate_emails_rejects_too_many():
 
 
 def test_find_free_slots_tool_passes_emails_to_service():
-    fake_result = {"slots": [], "has_more": False, "unavailable": []}
+    fake_result = {"slots": [], "tentative_slots": [], "has_more": False, "unavailable": []}
     with patch.object(server, "get_account", return_value=object()), patch(
         "outlook_mcp.server.find_free_slots_svc", return_value=fake_result
     ) as svc:
@@ -113,6 +113,7 @@ def test_find_free_slots_tool_invalid_email_returns_structured_error():
 def test_find_free_slots_tool_surfaces_unavailable_field():
     fake_result = {
         "slots": [],
+        "tentative_slots": [],
         "has_more": False,
         "unavailable": [{"email": "bad@x.ru", "reason": "no access"}],
     }
@@ -121,6 +122,52 @@ def test_find_free_slots_tool_surfaces_unavailable_field():
     ):
         result = server.find_free_slots(target_date="2026-07-15", duration_min=30, emails=["bad@x.ru"])
     assert result == fake_result
+
+
+def test_find_free_slots_tool_passes_include_self_to_service():
+    fake_result = {"slots": [], "tentative_slots": [], "has_more": False, "unavailable": []}
+    with patch.object(server, "get_account", return_value=object()), patch(
+        "outlook_mcp.server.find_free_slots_svc", return_value=fake_result
+    ) as svc:
+        server.find_free_slots(target_date="2026-07-15", duration_min=30, emails=["a@x.ru"], include_self=False)
+    assert svc.call_args.kwargs["include_self"] is False
+
+
+def test_find_free_slots_tool_include_self_defaults_true():
+    fake_result = {"slots": [], "tentative_slots": [], "has_more": False, "unavailable": []}
+    with patch.object(server, "get_account", return_value=object()), patch(
+        "outlook_mcp.server.find_free_slots_svc", return_value=fake_result
+    ) as svc:
+        server.find_free_slots(target_date="2026-07-15", duration_min=30)
+    assert svc.call_args.kwargs["include_self"] is True
+
+
+def test_find_free_slots_tool_surfaces_tentative_slots():
+    fake_result = {
+        "slots": [],
+        "tentative_slots": [{"start": "2026-07-15T10:00:00+03:00", "end": "2026-07-15T11:00:00+03:00"}],
+        "has_more": False,
+        "unavailable": [],
+    }
+    with patch.object(server, "get_account", return_value=object()), patch(
+        "outlook_mcp.server.find_free_slots_svc", return_value=fake_result
+    ):
+        result = server.find_free_slots(target_date="2026-07-15", duration_min=30)
+    assert result == fake_result
+
+
+def test_find_free_slots_tool_include_self_false_without_emails_returns_structured_error():
+    with patch.object(server, "get_account", return_value=object()), patch(
+        "outlook_mcp.server.find_free_slots_svc", side_effect=InvalidArgumentError("include_self=false ...")
+    ):
+        result = server.find_free_slots(target_date="2026-07-15", duration_min=30, include_self=False)
+    assert result["error"] == "invalid_argument"
+
+
+def test_find_free_slots_tool_invalid_include_self_returns_structured_error():
+    with patch.object(server, "get_account", return_value=object()):
+        result = server.find_free_slots(target_date="2026-07-15", duration_min=30, include_self="yes")
+    assert result["error"] == "invalid_argument"
 
 
 def test_resolve_person_happy_path_returns_candidates():

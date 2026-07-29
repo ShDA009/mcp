@@ -6,13 +6,16 @@ import pytest
 from exchangelib.errors import ErrorInvalidChangeKey, TransportError
 
 from outlook_mcp.calendar_service import (
+    _busy_intervals_within,
+    _HARD_BUSY_TYPES,
     _merge_intervals,
+    _TENTATIVE_BUSY_TYPE,
     find_free_slots,
     get_event_by_id,
     list_events_for_range,
 )
 from outlook_mcp.config import Config
-from outlook_mcp.errors import ConnectionUnavailableError, ItemNotFoundError
+from outlook_mcp.errors import ConnectionUnavailableError, InvalidArgumentError, ItemNotFoundError
 
 from .conftest import make_event, utc_dt
 
@@ -146,6 +149,15 @@ class FakeWorkingPeriod:
 
 
 class FakeCalendarEvent:
+    def __init__(self, start, end, busy_type="Busy"):
+        self.start = start
+        self.end = end
+        self.busy_type = busy_type
+
+
+class FakeCalendarEventNoBusyType:
+    """Mimics an odd/legacy CalendarEvent lacking the busy_type attribute."""
+
     def __init__(self, start, end):
         self.start = start
         self.end = end
@@ -387,7 +399,7 @@ def test_find_free_slots_no_working_hours_skips_participant_requests():
             account, date(2026, 7, 15), 30, make_config(), emails=["colleague@example.com"]
         )
 
-    assert result == {"slots": [], "has_more": False, "unavailable": []}
+    assert result == {"slots": [], "tentative_slots": [], "has_more": False, "unavailable": []}
     assert account.protocol.calls == []
 
 
@@ -422,3 +434,251 @@ def test_get_free_busy_view_for_email_passes_plain_string():
     _get_free_busy_view_for_email(account, "colleague@example.com", start, end)
 
     assert protocol.calls == ["colleague@example.com"]
+
+
+# --- busy_type classification -------------------------------------------------
+
+
+def test_find_free_slots_free_busy_type_does_not_block():
+    own_view = _own_view(busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 7, 0), utc_dt(2026, 7, 15, 8, 0), busy_type="Free")])
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+
+    starts = [s["start"] for s in result["slots"]]
+    assert "2026-07-15T10:00:00+03:00" in starts
+
+
+def test_find_free_slots_working_elsewhere_does_not_block():
+    own_view = _own_view(
+        busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 7, 0), utc_dt(2026, 7, 15, 8, 0), busy_type="WorkingElsewhere")]
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+
+    starts = [s["start"] for s in result["slots"]]
+    assert "2026-07-15T10:00:00+03:00" in starts
+
+
+def test_find_free_slots_nodata_does_not_block():
+    own_view = _own_view(busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 7, 0), utc_dt(2026, 7, 15, 8, 0), busy_type="NoData")])
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+
+    starts = [s["start"] for s in result["slots"]]
+    assert "2026-07-15T10:00:00+03:00" in starts
+
+
+def test_find_free_slots_oof_blocks():
+    own_view = _own_view(busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 7, 0), utc_dt(2026, 7, 15, 8, 0), busy_type="OOF")])
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+
+    starts = [s["start"] for s in result["slots"]] + [s["start"] for s in result["tentative_slots"]]
+    assert "2026-07-15T10:00:00+03:00" not in starts
+
+
+def test_find_free_slots_busy_blocks():
+    own_view = _own_view(busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 7, 0), utc_dt(2026, 7, 15, 8, 0), busy_type="Busy")])
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+
+    starts = [s["start"] for s in result["slots"]] + [s["start"] for s in result["tentative_slots"]]
+    assert "2026-07-15T10:00:00+03:00" not in starts
+
+
+def test_find_free_slots_missing_busy_type_treated_as_busy():
+    own_view = _own_view(busy=[FakeCalendarEventNoBusyType(utc_dt(2026, 7, 15, 7, 0), utc_dt(2026, 7, 15, 8, 0))])
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+
+    starts = [s["start"] for s in result["slots"]] + [s["start"] for s in result["tentative_slots"]]
+    assert "2026-07-15T10:00:00+03:00" not in starts
+
+
+def test_busy_intervals_within_filters_by_busy_type():
+    tz = ZoneInfo("Europe/Moscow")
+    window_start = datetime(2026, 7, 15, 9, 0, tzinfo=tz)
+    window_end = datetime(2026, 7, 15, 18, 0, tzinfo=tz)
+    view = FakeFreeBusyView(
+        [],
+        [
+            FakeCalendarEvent(utc_dt(2026, 7, 15, 6, 0), utc_dt(2026, 7, 15, 7, 0), busy_type="Busy"),
+            FakeCalendarEvent(utc_dt(2026, 7, 15, 8, 0), utc_dt(2026, 7, 15, 9, 0), busy_type="Tentative"),
+            FakeCalendarEvent(utc_dt(2026, 7, 15, 10, 0), utc_dt(2026, 7, 15, 11, 0), busy_type="Free"),
+        ],
+    )
+    hard = _busy_intervals_within(view, window_start, window_end, tz, _HARD_BUSY_TYPES)
+    assert len(hard) == 1
+
+    tentative = _busy_intervals_within(view, window_start, window_end, tz, frozenset({_TENTATIVE_BUSY_TYPE}))
+    assert len(tentative) == 1
+
+
+# --- tentative_slots -----------------------------------------------------------
+
+
+def test_find_free_slots_tentative_goes_to_tentative_slots():
+    own_view = _own_view(
+        busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 7, 0), utc_dt(2026, 7, 15, 8, 0), busy_type="Tentative")]
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+
+    slot_starts = [s["start"] for s in result["slots"]]
+    tentative_starts = [s["start"] for s in result["tentative_slots"]]
+    assert "2026-07-15T10:00:00+03:00" in tentative_starts
+    assert "2026-07-15T10:00:00+03:00" not in slot_starts
+    assert "2026-07-15T09:00:00+03:00" in slot_starts
+    assert "2026-07-15T11:00:00+03:00" in slot_starts
+
+
+def test_slots_and_tentative_slots_are_disjoint():
+    own_view = _own_view(
+        busy=[
+            FakeCalendarEvent(utc_dt(2026, 7, 15, 6, 0), utc_dt(2026, 7, 15, 7, 0), busy_type="Busy"),
+            FakeCalendarEvent(utc_dt(2026, 7, 15, 9, 0), utc_dt(2026, 7, 15, 10, 0), busy_type="Tentative"),
+        ]
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+
+    slot_starts = {s["start"] for s in result["slots"]}
+    tentative_starts = {s["start"] for s in result["tentative_slots"]}
+    assert slot_starts.isdisjoint(tentative_starts)
+
+
+def test_tentative_does_not_shift_slot_grid():
+    own_view = _own_view(
+        busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 7, 0), utc_dt(2026, 7, 15, 7, 30), busy_type="Tentative")]
+    )  # 10:00-10:30 Moscow
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+
+    slot_starts = [s["start"] for s in result["slots"]]
+    tentative_starts = [s["start"] for s in result["tentative_slots"]]
+    assert "2026-07-15T11:00:00+03:00" in slot_starts
+    assert "2026-07-15T12:00:00+03:00" in slot_starts
+    assert tentative_starts == ["2026-07-15T10:00:00+03:00"]
+
+
+def test_tentative_partial_overlap_marks_slot_tentative():
+    own_view = _own_view(
+        busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 7, 15), utc_dt(2026, 7, 15, 7, 45), busy_type="Tentative")]
+    )  # 10:15-10:45 Moscow, inside slot 10:00-11:00
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+
+    tentative_starts = [s["start"] for s in result["tentative_slots"]]
+    assert "2026-07-15T10:00:00+03:00" in tentative_starts
+
+
+def test_tentative_touching_slot_boundary_does_not_mark_it():
+    own_view = _own_view(
+        busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 7, 0), utc_dt(2026, 7, 15, 8, 0), busy_type="Tentative")]
+    )  # 10:00-11:00 Moscow, touches slot 11:00-12:00 boundary only
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(FreeSlotsAccount(), date(2026, 7, 15), 60, make_config())
+
+    slot_starts = [s["start"] for s in result["slots"]]
+    assert "2026-07-15T11:00:00+03:00" in slot_starts
+
+
+def test_find_free_slots_tentative_of_other_participant_reported():
+    account = FreeSlotsAccount(
+        protocol=FakeProtocol(
+            {
+                "colleague@example.com": FakeFreeBusyView(
+                    [],
+                    [FakeCalendarEvent(utc_dt(2026, 7, 15, 7, 0), utc_dt(2026, 7, 15, 8, 0), busy_type="Tentative")],
+                )
+            }
+        )
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 60, make_config(), emails=["colleague@example.com"]
+        )
+
+    tentative_starts = [s["start"] for s in result["tentative_slots"]]
+    assert "2026-07-15T10:00:00+03:00" in tentative_starts
+
+
+# --- include_self ----------------------------------------------------------
+
+
+def test_find_free_slots_include_self_false_ignores_own_busy():
+    own_view = _own_view(busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 6, 0), utc_dt(2026, 7, 15, 15, 0))])
+    account = FreeSlotsAccount(
+        protocol=FakeProtocol({"colleague@example.com": FakeFreeBusyView([], [])})
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        with_self = find_free_slots(
+            account, date(2026, 7, 15), 30, make_config(), emails=["colleague@example.com"], include_self=True
+        )
+        without_self = find_free_slots(
+            account, date(2026, 7, 15), 30, make_config(), emails=["colleague@example.com"], include_self=False
+        )
+
+    assert with_self["slots"] == []
+    assert len(without_self["slots"]) > 0
+
+
+def test_find_free_slots_include_self_false_still_uses_own_working_hours():
+    own_view = _own_view()  # 09:00-18:00 Wednesday (from FakeWorkingPeriod, hardcoded 09-18)
+    own_view.working_hours = [FakeWorkingPeriod(["Wednesday"], time(9, 0), time(13, 0))]
+    colleague_view = FakeFreeBusyView([FakeWorkingPeriod(["Wednesday"], time(9, 0), time(18, 0))], [])
+    account = FreeSlotsAccount(protocol=FakeProtocol({"colleague@example.com": colleague_view}))
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 30, make_config(), emails=["colleague@example.com"], include_self=False
+        )
+
+    assert all(s["end"] <= "2026-07-15T13:00:00+03:00" for s in result["slots"])
+
+
+def test_find_free_slots_include_self_false_still_fetches_own_view():
+    account = FreeSlotsAccount(protocol=FakeProtocol({"colleague@example.com": FakeFreeBusyView([], [])}))
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=_own_view()) as mocked:
+        find_free_slots(
+            account, date(2026, 7, 15), 30, make_config(), emails=["colleague@example.com"], include_self=False
+        )
+    mocked.assert_called_once()
+
+
+def test_find_free_slots_include_self_false_own_view_failure_is_fatal():
+    with patch(
+        "outlook_mcp.calendar_service._get_free_busy_view", side_effect=TransportError("boom")
+    ):
+        with pytest.raises(ConnectionUnavailableError):
+            find_free_slots(
+                FreeSlotsAccount(),
+                date(2026, 7, 15),
+                30,
+                make_config(),
+                emails=["colleague@example.com"],
+                include_self=False,
+            )
+
+
+def test_find_free_slots_include_self_false_without_emails_raises():
+    account = FreeSlotsAccount()
+    with pytest.raises(InvalidArgumentError):
+        find_free_slots(account, date(2026, 7, 15), 30, make_config(), emails=None, include_self=False)
+    with pytest.raises(InvalidArgumentError):
+        find_free_slots(account, date(2026, 7, 15), 30, make_config(), emails=[], include_self=False)
+    assert account.protocol.calls == []
+
+
+def test_find_free_slots_include_self_false_ignores_own_tentative():
+    own_view = _own_view(
+        busy=[FakeCalendarEvent(utc_dt(2026, 7, 15, 7, 0), utc_dt(2026, 7, 15, 8, 0), busy_type="Tentative")]
+    )
+    account = FreeSlotsAccount(
+        protocol=FakeProtocol({"colleague@example.com": FakeFreeBusyView([], [])})
+    )
+    with patch("outlook_mcp.calendar_service._get_free_busy_view", return_value=own_view):
+        result = find_free_slots(
+            account, date(2026, 7, 15), 30, make_config(), emails=["colleague@example.com"], include_self=False
+        )
+
+    assert result["tentative_slots"] == []

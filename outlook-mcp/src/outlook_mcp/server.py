@@ -112,29 +112,52 @@ def get_event(event_id: str) -> dict:
 
 
 @mcp.tool()
-def find_free_slots(target_date: str, duration_min: int, emails: list[str] | None = None) -> dict:
+def find_free_slots(
+    target_date: str,
+    duration_min: int,
+    emails: list[str] | None = None,
+    include_self: bool = True,
+) -> dict:
     """Find free time slots of the given duration (minutes) within working hours on a given date (YYYY-MM-DD).
 
     emails - optional list of colleagues' SMTP addresses. When given, a slot is
-    returned only if the own mailbox AND every listed person is free; the own
-    mailbox is always part of the intersection. Working hours always come from
-    the own mailbox's Exchange settings, not the other participants'.
+    returned only if every listed person is free. Working hours always come
+    from the own mailbox's Exchange settings, not the other participants'.
     Participants whose free/busy cannot be read (no permission, unknown
     mailbox) are skipped and listed in the "unavailable" field of the result
     instead of failing the call.
+
+    include_self - when true (default), the own mailbox's busy time is part of
+    the intersection, i.e. the answer is "when can WE meet". Set it to false to
+    ask "when are these colleagues free, regardless of my own calendar" - the
+    own calendar is then ignored for busy time, but the working hours of the
+    day still come from the own mailbox. include_self=false without any emails
+    is an error (nobody's calendar would be checked).
+
+    The result has two slot lists. "slots" are fully free. "tentative_slots"
+    are free except that someone has a tentatively accepted meeting there -
+    they are real candidates worth proposing, but mention that the time is
+    tentative. The two lists never overlap.
     """
     try:
         day = _parse_date(target_date, "target_date")
         if duration_min <= 0:
             raise InvalidArgumentError(f"Invalid duration_min {duration_min!r}, must be a positive integer")
+        if not isinstance(include_self, bool):
+            raise InvalidArgumentError(f"Invalid include_self {include_self!r}, expected a boolean")
         participants = _validate_emails(emails)
         account = get_account()
-        result = find_free_slots_svc(account, day, duration_min, _config, emails=participants)
+        result = find_free_slots_svc(
+            account, day, duration_min, _config, emails=participants, include_self=include_self
+        )
         logger.info(
-            "find_free_slots returned %d slot(s) for %d extra participant(s), %d unavailable",
+            "find_free_slots returned %d slot(s), %d tentative, for %d extra participant(s), "
+            "%d unavailable (include_self=%s)",
             len(result["slots"]),
+            len(result["tentative_slots"]),
             len(participants),
             len(result["unavailable"]),
+            include_self,
         )
         return result
     except OutlookMcpError as exc:

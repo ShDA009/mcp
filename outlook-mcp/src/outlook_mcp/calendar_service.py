@@ -6,7 +6,7 @@ from exchangelib import EWSTimeZone
 from exchangelib.errors import ErrorInvalidChangeKey, ErrorInvalidIdMalformed, ErrorItemNotFound
 
 from .config import Config
-from .errors import ItemNotFoundError, OutlookMcpError
+from .errors import InvalidArgumentError, ItemNotFoundError, OutlookMcpError
 from .ews_client import translate_ews_error
 from .formatting import decode_item_id, format_event_details, format_event_summary
 
@@ -96,6 +96,14 @@ def _find_by_id_in_calendar(account, item_id: str):
 
 _WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
+# EWS busy_type classification (exchangelib.fields.FREE_BUSY_CHOICES):
+# Busy/OOF block a slot outright. Tentative blocks it too, but is reported
+# separately in "tentative_slots" so the caller can offer it with a caveat.
+# Free/WorkingElsewhere/NoData never block (handled by omission below).
+_HARD_BUSY_TYPES = frozenset({"Busy", "OOF"})
+_TENTATIVE_BUSY_TYPE = "Tentative"
+_DEFAULT_BUSY_TYPE = "Busy"  # mirrors exchangelib's FreeBusyStatusField(default="Busy")
+
 
 def find_free_slots(
     account,
@@ -103,7 +111,14 @@ def find_free_slots(
     duration_min: int,
     config: Config,
     emails: list[str] | None = None,
+    include_self: bool = True,
 ) -> dict:
+    if not include_self and not emails:
+        raise InvalidArgumentError(
+            "include_self=false requires at least one email in 'emails': "
+            "with no participants there is nobody whose calendar could be checked"
+        )
+
     tz = ZoneInfo(config.timezone)
     ews_tz = EWSTimeZone.from_zoneinfo(tz)
     day_start = datetime.combine(target_date, time.min, tzinfo=ews_tz)
@@ -116,29 +131,59 @@ def find_free_slots(
 
     working_period = _working_period_for_weekday(own_view, target_date.strftime("%A"))
     if working_period is None:
-        return {"slots": [], "has_more": False, "unavailable": []}
+        return {"slots": [], "tentative_slots": [], "has_more": False, "unavailable": []}
 
     work_start = datetime.combine(target_date, working_period[0], tzinfo=tz)
     work_end = datetime.combine(target_date, working_period[1], tzinfo=tz)
 
-    views = [own_view]
+    views = [own_view] if include_self else []
     unavailable: list[dict] = []
     if emails:
         other_views, unavailable = _collect_participant_views(account, emails, day_start, day_end)
         views.extend(other_views)
 
-    busy_intervals = _merge_intervals(
-        [interval for view in views for interval in _busy_intervals_within(view, work_start, work_end, tz)]
+    hard_busy = _merge_intervals(
+        [
+            interval
+            for view in views
+            for interval in _busy_intervals_within(view, work_start, work_end, tz, _HARD_BUSY_TYPES)
+        ]
     )
-    free_slots = _subtract_intervals(work_start, work_end, busy_intervals)
+    tentative_busy = _merge_intervals(
+        [
+            interval
+            for view in views
+            for interval in _busy_intervals_within(
+                view, work_start, work_end, tz, frozenset({_TENTATIVE_BUSY_TYPE})
+            )
+        ]
+    )
 
+    # Slot grid is derived from hard-busy only. Subtracting tentative
+    # intervals in a second pass would shift _iter_slot_starts' anchor
+    # (it starts counting from each free window's own start), falsely
+    # marking genuinely-free slots as tentative just because an earlier
+    # tentative block shifted the grid. Instead, generate the grid once
+    # and classify each slot by whether it overlaps a tentative interval.
+    free_windows = _subtract_intervals(work_start, work_end, hard_busy)
     duration = timedelta(minutes=duration_min)
-    slots = [
-        {"start": start.isoformat(), "end": (start + duration).isoformat()}
-        for window_slot_start, window_slot_end in free_slots
-        for start in _iter_slot_starts(window_slot_start, window_slot_end, duration)
-    ]
-    return {"slots": slots, "has_more": False, "unavailable": unavailable}
+    slots: list[dict] = []
+    tentative_slots: list[dict] = []
+    for window_start, window_end in free_windows:
+        for start in _iter_slot_starts(window_start, window_end, duration):
+            end = start + duration
+            entry = {"start": start.isoformat(), "end": end.isoformat()}
+            if _overlaps_any(start, end, tentative_busy):
+                tentative_slots.append(entry)
+            else:
+                slots.append(entry)
+
+    return {
+        "slots": slots,
+        "tentative_slots": tentative_slots,
+        "has_more": False,
+        "unavailable": unavailable,
+    }
 
 
 def _get_free_busy_view(account, window_start: datetime, window_end: datetime):
@@ -236,9 +281,14 @@ def _working_period_for_weekday(view, weekday_name: str):
     return None
 
 
-def _busy_intervals_within(view, window_start: datetime, window_end: datetime, tz: ZoneInfo):
+def _busy_intervals_within(
+    view, window_start: datetime, window_end: datetime, tz: ZoneInfo, busy_types: frozenset[str]
+):
     intervals = []
     for calendar_event in getattr(view, "calendar_events", None) or []:
+        busy_type = getattr(calendar_event, "busy_type", None) or _DEFAULT_BUSY_TYPE
+        if busy_type not in busy_types:
+            continue
         start = calendar_event.start
         end = calendar_event.end
         if start.tzinfo is None:
@@ -250,6 +300,15 @@ def _busy_intervals_within(view, window_start: datetime, window_end: datetime, t
         if end > window_start and start < window_end:
             intervals.append((max(start, window_start), min(end, window_end)))
     return sorted(intervals)
+
+
+def _overlaps_any(start: datetime, end: datetime, intervals: list) -> bool:
+    """True if [start, end) intersects any interval in the (merged) list.
+
+    Strict inequalities: an interval that only touches the slot's boundary
+    does not count as an overlap.
+    """
+    return any(interval_start < end and start < interval_end for interval_start, interval_end in intervals)
 
 
 def _subtract_intervals(window_start: datetime, window_end: datetime, busy: list) -> list:
