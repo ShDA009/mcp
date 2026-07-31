@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 RESPONSE_STATUS_MAP = {
@@ -11,10 +11,14 @@ RESPONSE_STATUS_MAP = {
 }
 
 
-def to_timezone_iso(dt: datetime, timezone: str) -> str:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-    return dt.astimezone(ZoneInfo(timezone)).isoformat()
+def to_timezone_iso(value: date | datetime, timezone: str) -> str:
+    # All-day события exchangelib отдаёт как EWSDate (подкласс date, без
+    # tzinfo) — это календарный день без времени, конвертировать в tz нельзя.
+    if not isinstance(value, datetime):
+        return value.isoformat()
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=ZoneInfo("UTC"))
+    return value.astimezone(ZoneInfo(timezone)).isoformat()
 
 
 def map_response_status(raw_status: str | None) -> str:
@@ -54,6 +58,7 @@ def format_event_summary(item, timezone: str) -> dict:
             getattr(item, "recurrence", None)
         ),
         "item_type": getattr(item, "type", None),
+        "is_all_day": bool(getattr(item, "is_all_day", False)),
     }
 
 

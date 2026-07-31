@@ -41,6 +41,7 @@ class FakeCalendarItem:
     is_recurring: bool = False
     recurrence: object = None
     type: str = "Single"
+    is_all_day: bool = False
 
 
 @dataclass
@@ -77,6 +78,7 @@ def make_event(
     body_text="Agenda here",
     item_id="AAA",
     changekey="CCC",
+    is_all_day=False,
 ):
     start = start or utc_dt(2026, 7, 15, 10, 0)
     end = end or utc_dt(2026, 7, 15, 11, 0)
@@ -91,6 +93,7 @@ def make_event(
         required_attendees=attendees or [],
         location=location,
         body=FakeBody(body_text) if body_text is not None else None,
+        is_all_day=is_all_day,
     )
 
 

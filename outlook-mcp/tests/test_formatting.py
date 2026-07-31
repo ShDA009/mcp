@@ -1,3 +1,5 @@
+from datetime import date
+
 from outlook_mcp.formatting import (
     apply_limit,
     format_email_details,
@@ -16,6 +18,29 @@ def test_to_timezone_iso_converts_utc_to_moscow():
     dt = utc_dt(2026, 7, 15, 11, 30)
     result = to_timezone_iso(dt, "Europe/Moscow")
     assert result == "2026-07-15T14:30:00+03:00"
+
+
+def test_to_timezone_iso_passes_through_plain_date():
+    result = to_timezone_iso(date(2026, 7, 15), "Europe/Moscow")
+    assert result == "2026-07-15"
+
+
+def test_format_event_summary_all_day_event():
+    event = make_event(
+        start=date(2026, 7, 15),
+        end=date(2026, 7, 16),
+        is_all_day=True,
+    )
+    result = format_event_summary(event, "Europe/Moscow")
+    assert result["start"] == "2026-07-15"
+    assert result["end"] == "2026-07-16"
+    assert result["is_all_day"] is True
+
+
+def test_format_event_summary_normal_event_is_not_all_day():
+    event = make_event()
+    result = format_event_summary(event, "Europe/Moscow")
+    assert result["is_all_day"] is False
 
 
 def test_map_response_status_known_values():
