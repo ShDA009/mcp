@@ -100,12 +100,37 @@ UVX_BIN="$(dirname "$UV_BIN")/uvx"
 ok "uvx: $UVX_BIN"
 
 # --- 2. Путь к конфигу Cline ------------------------------------------------
+# Cline хранит конфиг в двух разных местах в зависимости от версии:
+#   1) ~/.cline/data/settings/     — с версии, переехавшей в свой каталог;
+#   2) <VS Code globalStorage>/... — прежний путь внутри расширения.
+# Пишем в тот, который реально существует, иначе сервер не появится в списке
+# MCP. Если есть оба — берём более свежий по времени изменения: именно его
+# Cline и перезаписывает при работе.
+CLINE_NEW_DIR="$HOME/.cline/data/settings"
 if [ "$PLATFORM" = "macOS" ]; then
-  CLINE_DIR="$HOME/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings"
+  CLINE_VSCODE_DIR="$HOME/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings"
 else
-  CLINE_DIR="$HOME/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings"
+  CLINE_VSCODE_DIR="$HOME/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings"
+fi
+
+NEW_CFG="$CLINE_NEW_DIR/cline_mcp_settings.json"
+VSCODE_CFG="$CLINE_VSCODE_DIR/cline_mcp_settings.json"
+
+if [ -f "$NEW_CFG" ] && [ -f "$VSCODE_CFG" ]; then
+  if [ "$NEW_CFG" -nt "$VSCODE_CFG" ]; then
+    CLINE_DIR="$CLINE_NEW_DIR"
+  else
+    CLINE_DIR="$CLINE_VSCODE_DIR"
+  fi
+elif [ -f "$NEW_CFG" ]; then
+  CLINE_DIR="$CLINE_NEW_DIR"
+elif [ -f "$VSCODE_CFG" ]; then
+  CLINE_DIR="$CLINE_VSCODE_DIR"
+else
+  CLINE_DIR="$CLINE_NEW_DIR"
 fi
 CLINE_CFG="$CLINE_DIR/cline_mcp_settings.json"
+ok "Конфиг Cline: $CLINE_CFG"
 
 # --- 3. Каталог, .env и лаунчер сервера --------------------------------------
 CONF_DIR="$HOME/.config/mcp-atlassian"
@@ -284,12 +309,46 @@ if not isinstance(servers, dict):
 
 # Обновляем секцию на месте — не дублируем. Ни версия, ни креды НЕ попадают в
 # этот JSON: всё это внутри launch.sh и .env в ~/.config/mcp-atlassian/.
-servers[key] = {
-    "command": os.environ["LAUNCH_FILE"],
-    "args": [],
-    "disabled": False,
-    "transportType": "stdio",
-}
+# У Cline две схемы записи сервера, и версии их не понимают взаимно:
+#   новая:  {"transport": {"type": "stdio", "command": ..., "args": [...]}, ...}
+#   старая: {"command": ..., "args": [...], "transportType": "stdio", ...}
+# Подстраиваемся под то, что уже лежит в файле у соседних серверов, иначе Cline
+# проигнорирует запись. Если соседей нет — пишем новую схему.
+_command = os.environ["LAUNCH_FILE"]
+_args = []
+
+
+def uses_new_schema(cfg):
+    for name, srv in cfg.items():
+        if name == key or not isinstance(srv, dict):
+            continue
+        if isinstance(srv.get("transport"), dict):
+            return True
+        if "transportType" in srv or "command" in srv:
+            return False
+    return True
+
+
+if uses_new_schema(servers):
+    entry = {
+        "transport": {"type": "stdio", "command": _command, "args": _args},
+        "disabled": False,
+        "timeout": 60,
+    }
+else:
+    entry = {
+        "command": _command,
+        "args": _args,
+        "disabled": False,
+        "transportType": "stdio",
+    }
+
+# Если сервер уже был в конфиге и его выключили вручную — не включаем обратно.
+prev = servers.get(key)
+if isinstance(prev, dict) and isinstance(prev.get("disabled"), bool):
+    entry["disabled"] = prev["disabled"]
+
+servers[key] = entry
 
 tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as f:

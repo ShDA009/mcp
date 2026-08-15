@@ -10,6 +10,15 @@ $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# uv/uvx по умолчанию использует свой набор корневых сертификатов и не доверяет
+# корпоративному CA при TLS-инспекции (Zscaler и т.п.) — скачивание падает с
+# "invalid peer certificate: UnknownIssuer" / "cannot decrypt peer's message".
+# Эти флаги заставляют uv брать сертификаты из системного хранилища Windows,
+# куда корп-CA уже добавлен. UV_SYSTEM_CERTS — актуальное имя, UV_NATIVE_TLS —
+# для старых версий uv (оба безвредны, если инспекции нет).
+$env:UV_SYSTEM_CERTS = '1'
+$env:UV_NATIVE_TLS = '1'
+
 # --- Константы --------------------------------------------------------------
 $ServerKey = 'mcp-atlassian'
 $VersionsRawUrl = 'https://raw.githubusercontent.com/ShDA009/mcp/master/mcp-versions.txt'
@@ -61,7 +70,27 @@ if ($UvxBin) {
 }
 
 # --- 2. Пути конфигов -------------------------------------------------------
-$ClineDir = Join-Path $env:APPDATA 'Code\User\globalStorage\saoudrizwan.claude-dev\settings'
+# Cline хранит конфиг в двух разных местах в зависимости от версии:
+#   1) %USERPROFILE%\.cline\data\settings\  — с версии, переехавшей в свой каталог;
+#   2) %APPDATA%\Code\...globalStorage\...  — прежний путь внутри расширения.
+# Пишем в тот, который реально существует, иначе сервер не появится в списке
+# MCP. Если есть оба — берём более свежий по времени изменения.
+$ClineNewDir = Join-Path $env:USERPROFILE '.cline\data\settings'
+$ClineVsCodeDir = Join-Path $env:APPDATA 'Code\User\globalStorage\saoudrizwan.claude-dev\settings'
+$NewCfg = Join-Path $ClineNewDir 'cline_mcp_settings.json'
+$VsCodeCfg = Join-Path $ClineVsCodeDir 'cline_mcp_settings.json'
+
+if ((Test-Path $NewCfg) -and (Test-Path $VsCodeCfg)) {
+    $newTime = (Get-Item $NewCfg).LastWriteTime
+    $oldTime = (Get-Item $VsCodeCfg).LastWriteTime
+    $ClineDir = if ($newTime -gt $oldTime) { $ClineNewDir } else { $ClineVsCodeDir }
+} elseif (Test-Path $NewCfg) {
+    $ClineDir = $ClineNewDir
+} elseif (Test-Path $VsCodeCfg) {
+    $ClineDir = $ClineVsCodeDir
+} else {
+    $ClineDir = $ClineNewDir
+}
 $ClineCfg = Join-Path $ClineDir 'cline_mcp_settings.json'
 
 $ConfDir = Join-Path $env:USERPROFILE '.mcp-atlassian'
@@ -162,6 +191,9 @@ Write-Ok "Креды сохранены в $EnvFile"
 # вызывает `command` как исполняемый файл, а не интерпретирует .ps1 напрямую.
 $launchScriptLines = @(
     '$ErrorActionPreference = ''Stop'''
+    '# см. комментарий в setup.ps1: доверять корп-CA при обновлении пакета.'
+    '$env:UV_SYSTEM_CERTS = ''1'''
+    '$env:UV_NATIVE_TLS = ''1'''
     "`$ConfDir = '$ConfDir'"
     "`$Cache = Join-Path `$ConfDir 'mcp-versions.txt'"
     "`$RawUrl = '$VersionsRawUrl'"
@@ -243,11 +275,43 @@ if (-not ($cfg.PSObject.Properties.Name -contains 'mcpServers') -or $null -eq $c
 }
 
 # Ни версия, ни креды НЕ попадают в этот JSON: всё внутри launch.cmd и .env.
-$serverObj = [pscustomobject]@{
-    command       = $LaunchFile
-    args          = @()
-    disabled      = $false
-    transportType = 'stdio'
+# У Cline две схемы записи сервера, и версии их не понимают взаимно:
+#   новая:  transport = @{ type = 'stdio'; command = ...; args = ... }
+#   старая: command / args / transportType на верхнем уровне
+# Подстраиваемся под то, что уже лежит в файле у соседних серверов.
+$useNewSchema = $true
+foreach ($p in $cfg.mcpServers.PSObject.Properties) {
+    if ($p.Name -eq $ServerKey) { continue }
+    $v = $p.Value
+    if ($null -eq $v) { continue }
+    if ($v.PSObject.Properties.Name -contains 'transport') { $useNewSchema = $true; break }
+    if (($v.PSObject.Properties.Name -contains 'transportType') -or
+        ($v.PSObject.Properties.Name -contains 'command')) { $useNewSchema = $false; break }
+}
+
+if ($useNewSchema) {
+    $serverObj = [pscustomobject]@{
+        transport = [pscustomobject]@{
+            type    = 'stdio'
+            command = $LaunchFile
+            args    = @()
+        }
+        disabled  = $false
+        timeout   = 60
+    }
+} else {
+    $serverObj = [pscustomobject]@{
+        command       = $LaunchFile
+        args          = @()
+        disabled      = $false
+        transportType = 'stdio'
+    }
+}
+
+# Если сервер уже был в конфиге и его выключили вручную — не включаем обратно.
+$prevEntry = $cfg.mcpServers.PSObject.Properties[$ServerKey]
+if ($prevEntry -and $prevEntry.Value -and ($prevEntry.Value.PSObject.Properties.Name -contains 'disabled')) {
+    $serverObj.disabled = [bool]$prevEntry.Value.disabled
 }
 
 $cfg.mcpServers | Add-Member -NotePropertyName $ServerKey -NotePropertyValue $serverObj -Force
