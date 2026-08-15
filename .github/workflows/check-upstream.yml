@@ -1,7 +1,8 @@
 name: Check upstream MCP versions
 
-# Раз в неделю сравнивает актуальные версии mcp-atlassian (PyPI) и
-# @zereight/mcp-gitlab (npm) с диапазонами, зафиксированными в mcp-versions.txt.
+# Раз в неделю сравнивает актуальные версии mcp-atlassian (PyPI), postgres-mcp
+# (PyPI) и @zereight/mcp-gitlab (npm) с диапазонами, зафиксированными в
+# mcp-versions.txt.
 # Патчи внутри диапазона не требуют внимания — они подтягиваются лаунчерами
 # автоматически при каждом запуске сервера (см. mcp-atlassian/install/ и
 # gitlab-mcp/install/). Этот workflow предупреждает только о новой минорной
@@ -74,6 +75,23 @@ jobs:
                       f"на PyPI доступна {latest} (ветка >= верхней границы "
                       f"{upper_major}.{upper_minor}). "
                       f"https://github.com/sooperset/mcp-atlassian/releases"
+                  )
+
+          # --- postgres-mcp: PyPI ------------------------------------------------
+          # Диапазон задан так же минорными границами (">=0.3,<0.4").
+          postgres_spec = versions.get("POSTGRES_SPEC", "")
+          m = re.search(r">=(\d+)\.(\d+),<(\d+)\.(\d+)", postgres_spec)
+          if m:
+              upper_major, upper_minor = int(m.group(3)), int(m.group(4))
+              data = json.loads(get("https://pypi.org/pypi/postgres-mcp/json"))
+              latest = data["info"]["version"]
+              latest_v = semver(latest)
+              if latest_v and minor_branch(*latest_v[:2]) >= minor_branch(upper_major, upper_minor):
+                  findings.append(
+                      f"**postgres-mcp**: диапазон `{postgres_spec}` устарел — "
+                      f"на PyPI доступна {latest} (ветка >= верхней границы "
+                      f"{upper_major}.{upper_minor}). "
+                      f"https://github.com/crystaldba/postgres-mcp/releases"
                   )
 
           # --- gitlab-mcp: npm ---------------------------------------------------

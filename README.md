@@ -10,6 +10,7 @@
 | [zephyr-mcp](zephyr-mcp/) | Zephyr Scale (ATM), REST + Bearer PAT | да | `uvx` из git |
 | [mcp-atlassian](mcp-atlassian/) | Jira + Confluence, REST + PAT | нет (сторонний) | `uvx` из PyPI |
 | [gitlab-mcp](gitlab-mcp/) | GitLab, REST + PAT | нет (сторонний, Node) | `npx` из npm |
+| [postgres-mcp](postgres-mcp/) | PostgreSQL: health, explain, индексы | нет (сторонний) | `uvx` из PyPI |
 
 ## Установка (рекомендуется): установочный скрипт, без Docker
 
@@ -20,13 +21,15 @@ outlook-mcp/install/setup.sh    # или setup.ps1 на Windows
 zephyr-mcp/install/setup.sh
 mcp-atlassian/install/setup.sh
 gitlab-mcp/install/setup.sh
+postgres-mcp/install/setup.sh
 ```
 
 Подробная инструкция — в `install/README.md` каждого сервера:
 [outlook-mcp](outlook-mcp/install/README.md) ·
 [zephyr-mcp](zephyr-mcp/install/README.md) ·
 [mcp-atlassian](mcp-atlassian/install/README.md) ·
-[gitlab-mcp](gitlab-mcp/install/README.md).
+[gitlab-mcp](gitlab-mcp/install/README.md) ·
+[postgres-mcp](postgres-mcp/install/README.md).
 
 Скрипт сам:
 1. находит/ставит `uv` (для `gitlab-mcp` дополнительно нужен предустановленный
@@ -39,7 +42,7 @@ gitlab-mcp/install/setup.sh
 Повторный запуск безопасен — секция в конфиге Cline обновляется на месте, не
 дублируется.
 
-### Почему у сторонних серверов (`mcp-atlassian`, `gitlab-mcp`) есть лаунчер
+### Почему у сторонних серверов (`mcp-atlassian`, `gitlab-mcp`, `postgres-mcp`) есть лаунчер
 
 Для своих серверов (`outlook-mcp`, `zephyr-mcp`) конфиг Cline вызывает `uvx`
 напрямую — версия кода не фиксируется, `uvx` всегда берёт актуальный `master`
@@ -51,6 +54,7 @@ gitlab-mcp/install/setup.sh
 ```bash
 ATLASSIAN_SPEC="mcp-atlassian>=0.23,<0.24"
 GITLAB_SPEC="@zereight/mcp-gitlab@^2.1"
+POSTGRES_SPEC="postgres-mcp>=0.3,<0.4"
 ```
 
 Установщик генерирует **лаунчер** (`~/.config/<сервер>/launch.sh`, на Windows
@@ -80,8 +84,9 @@ cd outlook-mcp && docker build -t outlook-mcp:latest .
 cd ../zephyr-mcp && docker build -t zephyr-mcp:latest .
 ```
 
-`mcp-atlassian` и `gitlab-mcp` используют готовые образы:
-`ghcr.io/sooperset/mcp-atlassian`, `zereight050/gitlab-mcp`.
+`mcp-atlassian`, `gitlab-mcp` и `postgres-mcp` используют готовые образы:
+`ghcr.io/sooperset/mcp-atlassian`, `zereight050/gitlab-mcp`,
+`crystaldba/postgres-mcp`.
 
 Креды — вручную, скопировать `.env.example` в `.env` и заполнить:
 
@@ -90,6 +95,7 @@ cp mcp-atlassian/.env.example mcp-atlassian/.env
 cp zephyr-mcp/.env.example zephyr-mcp/.env
 cp outlook-mcp/.env.example outlook-mcp/.env
 cp gitlab-mcp/.env.example gitlab-mcp/.env
+cp postgres-mcp/.env.example postgres-mcp/.env
 ```
 
 `.env` не должен попадать в git (заигнорирован в `.gitignore`). В конфиге
@@ -108,7 +114,7 @@ Cline/OpenCode — `docker run ... --env-file /абсолютный/путь/.en
 
 ```
 ├── README.md               ← этот файл
-├── mcp-versions.txt        ← версии mcp-atlassian/gitlab-mcp (минорные ветки)
+├── mcp-versions.txt        ← версии сторонних серверов (минорные ветки)
 ├── .gitignore
 ├── .github/workflows/
 │   └── check-upstream.yml  ← еженедельная проверка версий upstream
@@ -129,9 +135,14 @@ Cline/OpenCode — `docker run ... --env-file /абсолютный/путь/.en
 │   ├── install/            ← setup.sh / setup.ps1 (uvx из git)
 │   ├── .env.example
 │   └── .gitignore
-└── gitlab-mcp/             ← GitLab (сторонний код, Node)
+├── gitlab-mcp/             ← GitLab (сторонний код, Node)
+│   ├── README.md
+│   ├── install/            ← setup.sh / setup.ps1 (npx + лаунчер)
+│   ├── .env.example
+│   └── .gitignore
+└── postgres-mcp/           ← PostgreSQL (сторонний код)
     ├── README.md
-    ├── install/             ← setup.sh / setup.ps1 (npx + лаунчер)
+    ├── install/             ← setup.sh / setup.ps1 (uvx + лаунчер)
     ├── .env.example
     └── .gitignore
 ```
