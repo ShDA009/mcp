@@ -233,13 +233,21 @@ Docstring формулируется в терминах намерения: «�
 Ошибка до обращения к EWS, если результирующий `end <= start` (в том числе
 когда передан только `end`, оказавшийся раньше существующего `start`).
 
+**`event_id` в ответе перечитывается с item после `save()`.** При
+обновлении экземпляра серии EWS возвращает новый id (см. комментарий про
+`OccurrenceItemId` в `Item.save` в exchangelib) — переиспользовать входной
+`event_id` нельзя, клиент получил бы id, по которому потом не найдёт
+встречу.
+
 **Право на правку.** Менять может только организатор. Определяется до
 записи сравнением `item.organizer.email_address` с `config.ews_email`
 (регистронезависимо); если организатор не определяется — полагаемся на
-отказ EWS. `ErrorCannotUpdateObject`,
-`ErrorCalendarCannotUpdateDeletedItem` и родственные транслируются в
-`PermissionDeniedError` с текстом «встречу может изменить только
-организатор», а не отдаются сырым EWS-кодом.
+отказ EWS. Ошибки EWS транслируются в `PermissionDeniedError` с текстом
+«встречу может изменить только организатор», а не отдаются сырым кодом.
+Актуальный список для exchangelib 5.6.0 (проверен на установленной
+библиотеке): `ErrorCalendarIsNotOrganizer`, `ErrorAccessDenied`,
+`ErrorCalendarCannotUpdateDeletedItem`, `ErrorCannotDeleteObject`. Класса
+`ErrorCannotUpdateObject` в этой версии **не существует**.
 
 ## `delete_event`
 
