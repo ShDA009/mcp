@@ -1,8 +1,9 @@
 # outlook-mcp
 
-MCP-сервер только для чтения календаря и почты из on-prem Exchange по EWS
-(SOAP/NTLM). Транспорт — stdio. Потребитель — Cline. Запускается через
-`uvx` (рекомендуется) или в Docker.
+MCP-сервер к on-prem Exchange по EWS (SOAP/NTLM): чтение календаря и почты,
+создание/изменение/удаление встреч в календаре. Почта — только на чтение.
+Транспорт — stdio. Потребитель — Cline. Запускается через `uvx`
+(рекомендуется) или в Docker.
 
 ## Установка для сотрудников (uvx, без Docker)
 
@@ -46,6 +47,7 @@ EWS_PASSWORD=changeme
 # OUTLOOK_MCP_TIMEZONE=Europe/Moscow
 # OUTLOOK_MCP_DEFAULT_LIMIT=50
 # OUTLOOK_MCP_MAX_LIMIT=200
+# EWS_ALLOW_WRITE=0   # выключить пишущие tools календаря (по умолчанию включены)
 ```
 
 `.env` не должен попадать в репозиторий и не вшивается в образ — только
@@ -86,6 +88,36 @@ AI-модели).
 | `list_emails` | `folder="Inbox"`, `start_date?`, `end_date?`, `unread_only=false`, `limit?` | Письма в папке (`Inbox`/`Sent`/`Drafts`/`Junk`/`Deleted`), с фильтром по дате и признаку прочтения |
 | `get_email` | `email_id: str` | Полные детали письма: тело (plain text), метаданные вложений — **без содержимого вложений** |
 | `search_emails` | `query: str`, `folder="Inbox"`, `start_date?`, `end_date?`, `limit?` | Поиск по теме/отправителю/телу письма |
+
+Пишущие tools (только календарь; отключаются `EWS_ALLOW_WRITE=0` — тогда они
+вообще не появляются в `tools/list`):
+
+| Tool | Параметры | Описание |
+|---|---|---|
+| `create_event` | `subject: str`, `start: str`, `end: str`, `attendees?: list[str]`, `optional_attendees?: list[str]`, `location?: str`, `body?: str`, `all_day?: bool = false`, `send_invitations?: bool = true` | Создаёт встречу. `start`/`end` — ISO; без offset время читается в таймзоне ящика. Участники — **только email**, не имена (сначала `resolve_person`). При `all_day=true` берутся только даты, `end` включительный. Занятость времени не проверяется — для этого `find_free_slots`. Повторяющиеся встречи не поддерживаются |
+| `update_event` | `event_id: str`, `subject?: str`, `start?: str`, `end?: str`, `location?: str`, `body?: str`, `attendees?: list[str]`, `send_invitations?: bool = true` | Меняет встречу; только организатор. Передаются лишь изменяемые поля, очистка полей не поддерживается. Только `start` — перенос с сохранением длительности; только `end` — изменение длительности. Для серии передаётся `event_id` конкретного экземпляра; id самой серии отклоняется. `event_id` в ответе может отличаться от переданного |
+| `delete_event` | `event_id: str`, `send_cancellations?: bool = true` | Отменяет встречу; только организатор. Для серии — id конкретного экземпляра. Отклонение чужого приглашения не поддерживается |
+
+Пример ответа `create_event` (совпадает с `get_event` плюс `invitations_sent`):
+
+```json
+{
+  "event_id": "AAA:CCC",
+  "subject": "Sync",
+  "start": "2026-08-20T15:00:00+03:00",
+  "end": "2026-08-20T16:00:00+03:00",
+  "attendees": [{"name": null, "email": "alice@example.com", "response_status": "none"}],
+  "location": null,
+  "body": "",
+  "invitations_sent": true
+}
+```
+
+Пример ответа `delete_event`:
+
+```json
+{"deleted": true, "event_id": "AAA:CCC", "subject": "Sync", "cancellations_sent": true}
+```
 
 Пример ответа `list_events`:
 
@@ -346,6 +378,12 @@ stdio и структурированные ошибки при недоступ
 
 ## Не делать
 
-- Никакой записи в Exchange — только чтение.
+- Никакой записи в почту — почта только на чтение.
+- Запись в календарь — только через явные tools (`create_event`,
+  `update_event`, `delete_event`), выключается `EWS_ALLOW_WRITE=0`.
+- Не менять и не удалять чужие встречи: пишущие tools работают только там,
+  где ты организатор. Отклонение чужого приглашения — отдельная операция,
+  она не поддерживается.
+- Не проверять занятость внутри пишущих tools — для этого `find_free_slots`.
 - Только EWS/NTLM, без OAuth/Graph API.
 - Содержимое вложений не отдаётся, только метаданные.

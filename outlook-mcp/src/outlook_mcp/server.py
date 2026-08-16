@@ -439,9 +439,11 @@ def main() -> None:
 
     if "--help" in sys.argv[1:] or "-h" in sys.argv[1:]:
         print(
-            "outlook-mcp — read-only MCP server for Exchange/EWS (stdio transport).\n"
+            "outlook-mcp — MCP server for Exchange/EWS (stdio transport).\n"
+            "Reads calendar and mail; creates/updates/deletes calendar events.\n"
             "Run without arguments to start the MCP stdio server.\n"
-            "Required env: EWS_URL, EWS_USERNAME, EWS_EMAIL, EWS_PASSWORD."
+            "Required env: EWS_URL, EWS_USERNAME, EWS_EMAIL, EWS_PASSWORD.\n"
+            "Optional: EWS_ALLOW_WRITE=0 disables the calendar-write tools."
         )
         return
 

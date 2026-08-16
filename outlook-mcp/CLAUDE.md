@@ -1,9 +1,10 @@
 # outlook-mcp
 
-MCP-сервер только для чтения календаря и почты из on-prem Exchange по EWS
-(SOAP/NTLM), для потребителя Cline. Реализация завершена: календарь
-(`list_events`, `get_event`, `find_free_slots`), адресная книга
-(`resolve_person`), почта (`list_emails`, `get_email`, `search_emails`),
+MCP-сервер к on-prem Exchange по EWS (SOAP/NTLM), для потребителя Cline.
+Чтение: календарь (`list_events`, `get_event`, `find_free_slots`), адресная
+книга (`resolve_person`), почта (`list_emails`, `get_email`,
+`search_emails`). Запись — **только календарь** (`create_event`,
+`update_event`, `delete_event`); почта остаётся read-only. Всюду
 структурированная обработка ошибок.
 
 ## Структура
@@ -39,6 +40,14 @@ MCP-сервер только для чтения календаря и почт
   `list_events_for_range` (диапазон дат), `get_event_by_id` (одиночный item
   по `event_id`, с fallback-разрешением устаревшего ChangeKey) и
   `find_free_slots` (через `exchangelib.services.GetUserAvailability`).
+- `src/outlook_mcp/calendar_write.py` — запись в календарь: `create_event`,
+  `update_event`, `delete_event`, плюс парсинг времени (`parse_datetime`,
+  `parse_date_only`) и общие проверки (`_load_item`, `_ensure_writable`,
+  `_translate_write_error`). Вынесен отдельно от `calendar_service.py`
+  осознанно: тот уже 574 строки и почти целиком занят алгоритмом
+  `find_free_slots`. Из `calendar_service.py` переиспользуются `_fetch_one`
+  и `_find_by_id_in_calendar` (fallback по устаревшему ChangeKey) — их
+  нельзя дублировать, это уже отлаженная на живом сервере логика.
 - `src/outlook_mcp/directory_service.py` — `resolve_person`: поиск email по
   (частичному) имени через `account.protocol.resolve_names` (EWS
   `ResolveNames`, поиск по ГАБ). "Ничего не найдено" — штатный исход
@@ -356,6 +365,88 @@ MCP-сервер только для чтения календаря и почт
   `date.fromisoformat`/`limit`/`duration_min` через `_parse_date`/
   `_validate_limit`, которые кидают `InvalidArgumentError` вместо того,
   чтобы дать `ValueError` вылететь из tool необработанным.
+
+### Запись в календарь
+
+Дизайн и план: `docs/superpowers/specs/2026-08-15-calendar-write-design.md`,
+`docs/superpowers/plans/2026-08-15-calendar-write.md`.
+
+- **`EWS_ALLOW_WRITE` выключает пишущие tools, не регистрируя их.** Флаг в
+  `Config` (дефолт — включено, `0`/`false`/`no`/`off` выключают), в
+  `server.py` три tool объявлены внутри `if _config.allow_write:`. Именно
+  «не регистрируются», а не «регистрируются и отказывают»: LLM не должен
+  видеть инструмент, которым нельзя воспользоваться, иначе он будет звать
+  его и искать обходные пути вместо того, чтобы сказать человеку. Флаг
+  читается на импорте модуля, до ленивой валидации — он необязателен и не
+  валидируется, поэтому инвариант «сервер отдаёт `tools/list` без кред»
+  сохраняется.
+- **`send_invitations`/`send_cancellations` по умолчанию `True`.**
+  Рассматривался дефолт «не отправлять» как более безопасный — отвергнут:
+  он создаёт тихий разрыв между тем, что человек считает сделанным, и тем,
+  что произошло (встреча есть, участник не знает, выясняется в момент
+  начала). Ошибочное приглашение видно сразу и лечится извинением;
+  неотправленное не видно вообще. Риск неверного адресата закрывается не
+  выключением отправки, а тем, что участники принимаются **только как
+  email** — в docstring прямо сказано сначала звать `resolve_person` и
+  переспрашивать пользователя при нескольких кандидатах. Булев параметр
+  схлопывает три значения EWS в два (`SendToAllAndSaveCopy`/`SendToNone`);
+  `SendOnlyToAll` наружу не выставлен — копия в «Отправленных» это то, что
+  человек ожидает по опыту Outlook. Без участников всегда `SendToNone`, и
+  `invitations_sent` в ответе честно `false`.
+- **`update_event`: `start` и `end` ведут себя несимметрично.** Только
+  `start` — перенос с сохранением длительности («перенеси на 16:00» не
+  должно удлинять встречу); только `end` — изменение длительности («продли
+  до 17:00»), начало на месте. Оба — берутся как есть. Несимметрично
+  намеренно, по смыслу фраз; в docstring сформулировано в терминах
+  намерения, потому что иначе LLM, передав только `end`, молча растянет
+  встречу вместо переноса.
+- **`event_id` в ответе `update_event` перечитывается с item после
+  `save()`.** При обновлении экземпляра серии EWS выдаёт новый id (см.
+  комментарий про `OccurrenceItemId` в `Item.save` в exchangelib) —
+  переиспользовать входной `event_id` нельзя, клиент получил бы id, по
+  которому потом не найдёт встречу.
+- **Ошибки прав в exchangelib 5.6.0** (`_PERMISSION_ERRORS`):
+  `ErrorCalendarIsNotOrganizer`, `ErrorAccessDenied`,
+  `ErrorCalendarCannotUpdateDeletedItem`, `ErrorCannotDeleteObject`. Класса
+  `ErrorCannotUpdateObject` в этой версии **нет** — он был ошибочно назван
+  в первой редакции спека, поймано при проверке по установленной
+  библиотеке до написания кода. Организатор дополнительно проверяется до
+  записи сравнением `item.organizer.email_address` с `config.ews_email`
+  (регистронезависимо); если организатор не определяется, полагаемся на
+  отказ EWS.
+- **Повторяющиеся встречи: правится только экземпляр.** `Occurrence` и
+  `Exception` — штатный путь, `RecurringMaster` отклоняется с подсказкой
+  передать id конкретного экземпляра из `list_events`. Заложены два шва под
+  будущую полную поддержку: параметр `scope` (сейчас допустим только
+  `"occurrence"`) и `recurrence: dict | None` в `create_event` (сейчас
+  только `None`). Швы существуют, чтобы доработка была аддитивной и не
+  меняла контракт tools.
+- **`EWSDateTime`: два разных пути преобразования** (найдено при
+  реализации, не по документации). `naive.replace(tzinfo=EWSTimeZone)`
+  возвращает обычный `datetime` — его нужно обернуть в
+  `EWSDateTime.from_datetime(...)`. А `aware.astimezone(EWSTimeZone)` уже
+  возвращает `EWSDateTime`, и `from_datetime()` на нём **падает**
+  (`InvalidTypeError`, он не принимает собственный тип). Плюс
+  `from_datetime` не переваривает анонимный offset (`+05:00`) —
+  `UnknownTimeZone: No time zone found with key UTC+05:00`. Поэтому в
+  `parse_datetime` ветки разные, и упрощать их «до одной» нельзя.
+- **All-day — это флаг `is_all_day` + `EWSDate`, а не встреча 00:00–23:59.**
+  Встреча на сутки без флага закрасит день как занятый и отобразится
+  полосой, а не плашкой. `start`/`end` для all-day парсятся в `EWSDate`
+  (`DateOrDateTimeField` принимает оба типа), `end` **включительный**:
+  пользователь говорит «с 20 по 22», имея в виду три дня.
+- **`AttendeesField` принимает голые строки-email** — exchangelib сам
+  заворачивает их в `Attendee`/`Mailbox`, конструировать вручную не нужно
+  (проверено на 5.6.0).
+- **`CalendarItem.organizer` — read-only поле**, присваивать нельзя; при
+  создании встречи организатором становится владелец ящика автоматически.
+- **`FakeWriteAccount` обязан отдавать календарь.** Первая версия фейка
+  имела `calendar = None`, и тест «item не найден» падал не там, где
+  ожидалось: при пустом `fetch()` продакшн-код уходит в
+  `_find_by_id_in_calendar` (ChangeKey мог устареть). Это правильное
+  поведение, поэтому фейк получил пустой календарь, а заодно появился тест
+  `test_update_event_resolves_stale_changekey_via_calendar_scan` на сам
+  fallback.
 
 ## Тесты, Docker, ручная проверка EWS, ограничения проекта
 
