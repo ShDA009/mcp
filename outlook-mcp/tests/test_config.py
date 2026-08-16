@@ -64,3 +64,20 @@ def test_os_environ_takes_priority_over_env_file(monkeypatch, tmp_path):
     monkeypatch.setenv("EWS_USERNAME", "from_environ")
     cfg = Config()
     assert cfg.ews_username == "from_environ"
+
+
+def test_allow_write_defaults_to_true(monkeypatch):
+    monkeypatch.delenv("EWS_ALLOW_WRITE", raising=False)
+    assert Config().allow_write is True
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "FALSE", "no", "No", "off"])
+def test_allow_write_disabled_by_falsy_values(monkeypatch, raw):
+    monkeypatch.setenv("EWS_ALLOW_WRITE", raw)
+    assert Config().allow_write is False
+
+
+@pytest.mark.parametrize("raw", ["1", "true", "TRUE", "yes", "on", ""])
+def test_allow_write_enabled_by_other_values(monkeypatch, raw):
+    monkeypatch.setenv("EWS_ALLOW_WRITE", raw)
+    assert Config().allow_write is True

@@ -18,6 +18,9 @@ else:
     _ENV_FILE = Path.home() / ".config" / "outlook-mcp" / ".env"
 
 
+_FALSY = {"0", "false", "no", "off"}
+
+
 def _read_env_file(path: Path) -> dict:
     values: dict = {}
     try:
@@ -55,6 +58,9 @@ class Config:
         self.max_limit = self._parse_int(
             "OUTLOOK_MCP_MAX_LIMIT", _get("OUTLOOK_MCP_MAX_LIMIT", "200")
         )
+        # Пишущие tools включены по умолчанию; переменная нужна, чтобы можно
+        # было раздать заведомо read-only сервер, не меняя код.
+        self.allow_write = _get("EWS_ALLOW_WRITE", "1").strip().lower() not in _FALSY
 
     @staticmethod
     def _parse_int(name: str, raw: str) -> int:
