@@ -1,7 +1,9 @@
 import logging
+import re
 
 from exchangelib import Account, Configuration, Credentials, DELEGATE, NTLM
 from exchangelib.errors import (
+    ErrorExceededFindCountLimit,
     ErrorItemNotFound,
     ErrorNonExistentMailbox,
     RateLimitError,
@@ -14,6 +16,7 @@ from .errors import (
     AuthenticationError,
     ConnectionUnavailableError,
     ItemNotFoundError,
+    ResultTooLargeError,
     ThrottlingError,
 )
 
@@ -49,10 +52,19 @@ def build_account(config: Config) -> Account:
         logger.error("EWS authentication failed")
         raise AuthenticationError("Authentication with EWS failed") from exc
     except TransportError as exc:
-        logger.error("EWS connection failed")
-        raise ConnectionUnavailableError(
-            "Could not reach EWS endpoint (check VPN/network)"
-        ) from exc
+        logger.error("EWS connection failed: %s", exc)
+        raise translate_ews_error(exc) from exc
+
+
+def _http_status(exc: Exception) -> str | None:
+    """Pull an HTTP status code out of a transport-level error message.
+
+    exchangelib reports a rejected HTTP response as MalformedResponseError with
+    the code embedded in the text; without surfacing it, an outright refusal by
+    a proxy or by Exchange itself is indistinguishable from a dead network.
+    """
+    match = re.search(r"\bCode: (\d{3})\b", str(exc))
+    return match.group(1) if match else None
 
 
 def translate_ews_error(exc: Exception) -> Exception:
@@ -62,8 +74,24 @@ def translate_ews_error(exc: Exception) -> Exception:
         return ThrottlingError("EWS is throttling requests, retry with backoff")
     if isinstance(exc, ErrorItemNotFound):
         return ItemNotFoundError("Requested item was not found")
+    if isinstance(exc, ErrorExceededFindCountLimit):
+        return ResultTooLargeError(
+            "Exchange refused to return that many items - narrow the date range "
+            "or lower the limit"
+        )
     if isinstance(exc, TransportError):
+        status = _http_status(exc)
+        if status in ("401", "403"):
+            return AuthenticationError(
+                f"EWS refused the request with HTTP {status} - the account may lack "
+                "access, or a proxy is blocking the endpoint"
+            )
+        detail = f" ({exc})" if str(exc) else ""
+        if status:
+            return ConnectionUnavailableError(
+                f"EWS endpoint returned HTTP {status}{detail}"
+            )
         return ConnectionUnavailableError(
-            "Could not reach EWS endpoint (check VPN/network)"
+            f"Could not reach EWS endpoint (check VPN/network){detail}"
         )
     return exc

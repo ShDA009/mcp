@@ -33,3 +33,7 @@ class ConfigurationError(OutlookMcpError):
 
 class PermissionDeniedError(OutlookMcpError):
     code = "permission_denied"
+
+
+class ResultTooLargeError(OutlookMcpError):
+    code = "result_too_large"

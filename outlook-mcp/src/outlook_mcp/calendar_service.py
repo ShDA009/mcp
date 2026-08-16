@@ -76,28 +76,42 @@ def _fetch_one(account, item_id: str, changekey: str):
     return result, False
 
 
-_ID_RESOLUTION_WINDOW_DAYS = 180
+# Widening windows, in days around today. Measured on a real mailbox with
+# several never-ending recurring series: +-7d is ~100 expanded occurrences
+# (~20s), +-30d is ~400 (~80s), and +-90d blows past 1000 items - an unbounded
+# +-180d scan is what made EWS answer ErrorExceededFindCountLimit outright.
+# Nearly every real lookup hits the first window, so the wide ones are a rarely
+# paid fallback rather than the normal cost.
+_ID_RESOLUTION_WINDOWS_DAYS = (7, 30, 90)
+_ID_RESOLUTION_MAX_ITEMS = 1000
 
 
 def _find_by_id_in_calendar(account, item_id: str):
     """Re-resolve an item by id when its ChangeKey is stale or absent.
 
     Uses view(), not filter(): EWS FindItem returns only the RecurringMaster of
-    a series, so a moved or otherwise modified occurrence (which Exchange turns
-    into an Exception with a fresh id) would never be found by a filter() scan.
-    view() expands the series into individual occurrences inside the window,
-    which is exactly what has to be searchable here.
+    a series, so a moved occurrence (which Exchange turns into an Exception with
+    a fresh id) would never be found by a filter() scan. view() expands the
+    series into individual occurrences, which is exactly what must be findable.
+
+    That expansion is also why the scan is windowed and capped: a mailbox with
+    never-ending series produces thousands of occurrences over a wide range, and
+    EWS rejects the request instead of truncating it.
     """
     tz = ZoneInfo("UTC")
     now = datetime.now(tz)
-    window_start = now - timedelta(days=_ID_RESOLUTION_WINDOW_DAYS)
-    window_end = now + timedelta(days=_ID_RESOLUTION_WINDOW_DAYS)
-    try:
-        for item in account.calendar.view(start=window_start, end=window_end):
-            if item.id == item_id:
-                return item
-    except Exception as exc:
-        raise translate_ews_error(exc) from exc
+    for days in _ID_RESOLUTION_WINDOWS_DAYS:
+        try:
+            qs = account.calendar.view(
+                start=now - timedelta(days=days),
+                end=now + timedelta(days=days),
+                max_items=_ID_RESOLUTION_MAX_ITEMS,
+            )
+            for item in qs:
+                if item.id == item_id:
+                    return item
+        except Exception as exc:
+            raise translate_ews_error(exc) from exc
     return None
 
 
