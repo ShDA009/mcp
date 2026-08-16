@@ -4,6 +4,11 @@ from datetime import date
 from mcp.server.fastmcp import FastMCP
 
 from .calendar_service import find_free_slots as find_free_slots_svc, get_event_by_id, list_events_for_range
+from .calendar_write import (
+    create_event as create_event_svc,
+    delete_event as delete_event_svc,
+    update_event as update_event_svc,
+)
 from .config import load_config
 from .directory_service import resolve_person as resolve_person_svc
 from .errors import InvalidArgumentError, OutlookMcpError
@@ -270,6 +275,160 @@ def search_emails(
     except OutlookMcpError as exc:
         logger.error("search_emails failed: %s", exc.code)
         return exc.to_dict()
+
+
+# Пишущие tools регистрируются только при EWS_ALLOW_WRITE != 0/false/no/off.
+# Именно не регистрируются, а не "регистрируются и отказывают": LLM не должен
+# видеть инструмент, которым нельзя воспользоваться, иначе он будет пытаться
+# его звать и искать обходные пути вместо того, чтобы сказать об этом человеку.
+if _config.allow_write:
+
+    @mcp.tool()
+    def create_event(
+        subject: str,
+        start: str,
+        end: str,
+        attendees: list[str] | None = None,
+        optional_attendees: list[str] | None = None,
+        location: str | None = None,
+        body: str | None = None,
+        all_day: bool = False,
+        send_invitations: bool = True,
+    ) -> dict:
+        """Create a calendar event.
+
+        start/end - ISO datetimes. Without a UTC offset ("2026-08-20T15:00")
+        the time is read in the mailbox's local timezone, which is what a user
+        means by "at 15:00". With an offset it is respected as given.
+
+        attendees/optional_attendees - SMTP addresses ONLY, never names. If you
+        only know a person's name, call resolve_person first; if it returns
+        more than one candidate, ask the user which one is meant instead of
+        picking yourself - inviting the wrong person cannot be undone.
+
+        all_day - for whole-day events (vacation, offsite). start/end are then
+        read as dates, any time part is ignored, and end is INCLUSIVE:
+        "20th to 22nd" means all three days.
+
+        send_invitations - when true (default) and there are attendees, they
+        receive an invitation, matching what creating a meeting in Outlook
+        does. Set it to false to put the event in your own calendar only. With
+        no attendees nothing is sent either way.
+
+        This tool does not check whether the time is free - call
+        find_free_slots first if that matters.
+
+        Recurring events are not supported; create a single event instead.
+        The result mirrors get_event and adds "invitations_sent".
+        """
+        try:
+            required = _validate_emails(attendees)
+            optional = _validate_emails(optional_attendees)
+            account = get_account()
+            result = create_event_svc(
+                account,
+                _config,
+                subject=subject,
+                start=start,
+                end=end,
+                attendees=required,
+                optional_attendees=optional,
+                location=location,
+                body=body,
+                all_day=all_day,
+                send_invitations=send_invitations,
+            )
+            logger.info(
+                "create_event succeeded, invitations_sent=%s", result["invitations_sent"]
+            )
+            return result
+        except OutlookMcpError as exc:
+            logger.error("create_event failed: %s", exc.code)
+            return exc.to_dict()
+
+    @mcp.tool()
+    def update_event(
+        event_id: str,
+        subject: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        location: str | None = None,
+        body: str | None = None,
+        attendees: list[str] | None = None,
+        send_invitations: bool = True,
+    ) -> dict:
+        """Update an existing calendar event. Only the organizer can do this.
+
+        Pass only the fields you want to change; anything left out stays as it
+        is. Fields cannot be cleared - passing an empty subject is an error.
+
+        Timing: to MOVE the meeting pass start (the duration is preserved and
+        end moves with it). To CHANGE ITS LENGTH pass end (start stays put). To
+        set both boundaries pass both.
+
+        For a recurring meeting, pass the event_id of the specific occurrence
+        from list_events - this updates that occurrence only. The id of the
+        series itself is rejected; editing a whole series is not supported.
+
+        send_invitations - when true (default) attendees are notified of the
+        change, which matters most for a move: a rescheduled meeting nobody was
+        told about breaks other people's day.
+
+        The event_id in the result may differ from the one passed in (Exchange
+        reissues it when an occurrence is updated) - use the returned one from
+        then on.
+        """
+        try:
+            participants = _validate_emails(attendees) if attendees is not None else None
+            account = get_account()
+            result = update_event_svc(
+                account,
+                _config,
+                event_id,
+                subject=subject,
+                start=start,
+                end=end,
+                location=location,
+                body=body,
+                attendees=participants,
+                send_invitations=send_invitations,
+            )
+            logger.info(
+                "update_event succeeded, invitations_sent=%s", result["invitations_sent"]
+            )
+            return result
+        except OutlookMcpError as exc:
+            logger.error("update_event failed: %s", exc.code)
+            return exc.to_dict()
+
+    @mcp.tool()
+    def delete_event(event_id: str, send_cancellations: bool = True) -> dict:
+        """Delete (cancel) a calendar event. Only the organizer can do this.
+
+        send_cancellations - when true (default) attendees are notified, which
+        is what cancelling a meeting in Outlook does; otherwise the meeting
+        would silently stay in their calendars.
+
+        For a recurring meeting, pass the event_id of a specific occurrence
+        from list_events to cancel that one occurrence. The id of the series
+        itself is rejected.
+
+        Declining somebody else's meeting is a different operation and is not
+        supported - this tool only cancels meetings you organize.
+        """
+        try:
+            account = get_account()
+            result = delete_event_svc(
+                account, _config, event_id, send_cancellations=send_cancellations
+            )
+            logger.info(
+                "delete_event succeeded, cancellations_sent=%s",
+                result["cancellations_sent"],
+            )
+            return result
+        except OutlookMcpError as exc:
+            logger.error("delete_event failed: %s", exc.code)
+            return exc.to_dict()
 
 
 def main() -> None:

@@ -219,3 +219,99 @@ def test_resolve_person_no_matches_returns_empty_candidates():
     ):
         result = server.resolve_person(query="Nobody")
     assert result == {"candidates": []}
+
+
+_WRITE_TOOLS = {"create_event", "update_event", "delete_event"}
+
+
+def _tool_names(module):
+    import asyncio
+
+    return {t.name for t in asyncio.run(module.mcp.list_tools())}
+
+
+def test_write_tools_registered_by_default(monkeypatch):
+    import importlib
+
+    monkeypatch.delenv("EWS_ALLOW_WRITE", raising=False)
+    module = importlib.reload(server)
+    try:
+        assert _WRITE_TOOLS <= _tool_names(module)
+    finally:
+        importlib.reload(server)
+
+
+def test_write_tools_absent_when_disabled(monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("EWS_ALLOW_WRITE", "0")
+    module = importlib.reload(server)
+    try:
+        names = _tool_names(module)
+        assert not (_WRITE_TOOLS & names)
+        # читающие tools на месте
+        assert "list_events" in names
+    finally:
+        monkeypatch.delenv("EWS_ALLOW_WRITE", raising=False)
+        importlib.reload(server)
+
+
+def test_create_event_passes_arguments_to_service():
+    fake_account = object()
+    fake_result = {"event_id": "AAA:CCC", "invitations_sent": True}
+    with patch.object(server, "get_account", return_value=fake_account), patch(
+        "outlook_mcp.server.create_event_svc", return_value=fake_result
+    ) as svc:
+        result = server.create_event(
+            subject="Sync",
+            start="2026-08-20T15:00",
+            end="2026-08-20T16:00",
+            attendees=["A@Example.com"],
+        )
+    assert result == fake_result
+    kwargs = svc.call_args.kwargs
+    # адреса нормализуются существующим _validate_emails
+    assert kwargs["attendees"] == ["a@example.com"]
+    assert kwargs["subject"] == "Sync"
+
+
+def test_create_event_invalid_email_returns_structured_error():
+    with patch.object(server, "get_account", return_value=object()):
+        result = server.create_event(
+            subject="Sync",
+            start="2026-08-20T15:00",
+            end="2026-08-20T16:00",
+            attendees=["not-an-email"],
+        )
+    assert result["error"] == "invalid_argument"
+
+
+def test_update_event_returns_structured_error_from_service():
+    from outlook_mcp.errors import PermissionDeniedError
+
+    with patch.object(server, "get_account", return_value=object()), patch(
+        "outlook_mcp.server.update_event_svc",
+        side_effect=PermissionDeniedError("not organizer"),
+    ):
+        result = server.update_event(event_id="AAA:CCC", subject="x")
+    assert result["error"] == "permission_denied"
+
+
+def test_update_event_omitted_attendees_stay_none():
+    fake_result = {"event_id": "AAA:CCC", "invitations_sent": False}
+    with patch.object(server, "get_account", return_value=object()), patch(
+        "outlook_mcp.server.update_event_svc", return_value=fake_result
+    ) as svc:
+        server.update_event(event_id="AAA:CCC", subject="Renamed")
+    # None означает "не менять участников", пустой список означал бы "убрать всех"
+    assert svc.call_args.kwargs["attendees"] is None
+
+
+def test_delete_event_passes_flag_to_service():
+    fake_result = {"deleted": True, "cancellations_sent": False}
+    with patch.object(server, "get_account", return_value=object()), patch(
+        "outlook_mcp.server.delete_event_svc", return_value=fake_result
+    ) as svc:
+        result = server.delete_event(event_id="AAA:CCC", send_cancellations=False)
+    assert result == fake_result
+    assert svc.call_args.kwargs["send_cancellations"] is False
