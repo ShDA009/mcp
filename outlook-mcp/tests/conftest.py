@@ -97,6 +97,99 @@ def make_event(
     )
 
 
+class RecordingCalendarItem(FakeCalendarItem):
+    """Fake CalendarItem that records how save()/delete() were called.
+
+    Mirrors the real exchangelib contract: one save() for both create and
+    update (it branches on self.id), and the same kwarg names/defaults. Tests
+    assert on the recorded kwargs, not just on the outcome.
+    """
+
+    def __init__(self, *args, save_error=None, delete_error=None, **kwargs):
+        self.saved_with = None
+        self.deleted_with = None
+        self.save_error = save_error
+        self.delete_error = delete_error
+        super().__init__(*args, **kwargs)
+
+    def save(
+        self,
+        update_fields=None,
+        conflict_resolution="AutoResolve",
+        send_meeting_invitations="SendToNone",
+    ):
+        if self.save_error is not None:
+            raise self.save_error
+        self.saved_with = {
+            "update_fields": update_fields,
+            "conflict_resolution": conflict_resolution,
+            "send_meeting_invitations": send_meeting_invitations,
+        }
+        if not self.id:
+            self.id = "NEW-ID"
+            self.changekey = "NEW-CK"
+        return self
+
+    def delete(
+        self,
+        send_meeting_cancellations="SendToNone",
+        affected_task_occurrences="AllOccurrences",
+        suppress_read_receipts=True,
+    ):
+        if self.delete_error is not None:
+            raise self.delete_error
+        self.deleted_with = {"send_meeting_cancellations": send_meeting_cancellations}
+
+
+def make_writable_event(
+    subject="Sync",
+    start=None,
+    end=None,
+    organizer_email="me@example.com",
+    attendees=None,
+    item_id="AAA",
+    changekey="CCC",
+    item_type="Single",
+    is_all_day=False,
+    save_error=None,
+    delete_error=None,
+):
+    """Build a RecordingCalendarItem organized by me@example.com by default.
+
+    Default attendees are non-empty: invitation/cancellation defaults only have
+    an observable effect when there is somebody to notify.
+    """
+    if attendees is None:
+        attendees = [FakeAttendee(FakeMailbox(name="A", email_address="a@example.com"))]
+    return RecordingCalendarItem(
+        id=item_id,
+        changekey=changekey,
+        subject=subject,
+        start=start or utc_dt(2026, 8, 20, 10, 0),
+        end=end or utc_dt(2026, 8, 20, 11, 0),
+        organizer=FakeMailbox(name="Me", email_address=organizer_email),
+        required_attendees=list(attendees),
+        type=item_type,
+        is_all_day=is_all_day,
+        save_error=save_error,
+        delete_error=delete_error,
+    )
+
+
+class FakeWriteAccount:
+    """Account stub for write paths: fetch() returns a prepared item."""
+
+    def __init__(self, item=None, fetch_error=None):
+        self._item = item
+        self._fetch_error = fetch_error
+        self.calendar = None
+
+    def fetch(self, ids):
+        if self._fetch_error is not None:
+            raise self._fetch_error
+        return [] if self._item is None else [self._item]
+
+
 def make_email(
     subject="Hello",
     sender=None,
