@@ -5,6 +5,8 @@ MCP-сервер к on-prem Exchange по EWS (SOAP/NTLM): чтение кале
 Транспорт — stdio. Потребитель — Cline. Запускается через `uvx`
 (рекомендуется) или в Docker.
 
+История изменений — [CHANGELOG.md](CHANGELOG.md).
+
 ## Установка для сотрудников (uvx, без Docker)
 
 Готовые установочные скрипты в [install/](install/) — под Windows, macOS
