@@ -6,6 +6,7 @@ from exchangelib import EWSDate, EWSDateTime
 
 from outlook_mcp.calendar_write import (
     create_event,
+    delete_event,
     parse_date_only,
     parse_datetime,
     update_event,
@@ -401,6 +402,81 @@ def test_update_event_resolves_stale_changekey_via_calendar_scan():
     update_event(account, make_config(), "AAA:STALE", subject="Recovered")
     assert item.subject == "Recovered"
     assert item.saved_with is not None
+
+
+def test_delete_event_sends_cancellations_by_default():
+    item = make_writable_event(subject="Standup")
+    account = FakeWriteAccount(item)
+    result = delete_event(account, make_config(), "AAA:CCC")
+    assert item.deleted_with["send_meeting_cancellations"] == "SendToAllAndSaveCopy"
+    assert result == {
+        "deleted": True,
+        "event_id": "AAA:CCC",
+        "subject": "Standup",
+        "cancellations_sent": True,
+    }
+
+
+def test_delete_event_send_cancellations_false():
+    item = make_writable_event()
+    account = FakeWriteAccount(item)
+    result = delete_event(account, make_config(), "AAA:CCC", send_cancellations=False)
+    assert item.deleted_with["send_meeting_cancellations"] == "SendToNone"
+    assert result["cancellations_sent"] is False
+
+
+def test_delete_event_without_attendees_never_sends():
+    item = make_writable_event(attendees=[])
+    account = FakeWriteAccount(item)
+    result = delete_event(account, make_config(), "AAA:CCC")
+    assert item.deleted_with["send_meeting_cancellations"] == "SendToNone"
+    assert result["cancellations_sent"] is False
+
+
+def test_delete_event_non_organizer_rejected():
+    item = make_writable_event(organizer_email="boss@example.com")
+    account = FakeWriteAccount(item)
+    with pytest.raises(PermissionDeniedError):
+        delete_event(account, make_config(), "AAA:CCC")
+    assert item.deleted_with is None
+
+
+def test_delete_event_recurring_master_rejected():
+    item = make_writable_event(item_type="RecurringMaster")
+    account = FakeWriteAccount(item)
+    with pytest.raises(InvalidArgumentError):
+        delete_event(account, make_config(), "AAA:CCC")
+    assert item.deleted_with is None
+
+
+def test_delete_event_occurrence_is_allowed():
+    item = make_writable_event(item_type="Occurrence")
+    account = FakeWriteAccount(item)
+    delete_event(account, make_config(), "AAA:CCC")
+    assert item.deleted_with is not None
+
+
+def test_delete_event_scope_series_rejected():
+    item = make_writable_event()
+    account = FakeWriteAccount(item)
+    with pytest.raises(InvalidArgumentError):
+        delete_event(account, make_config(), "AAA:CCC", scope="series")
+    assert item.deleted_with is None
+
+
+def test_delete_event_missing_item_raises_not_found():
+    account = FakeWriteAccount(None)
+    with pytest.raises(ItemNotFoundError):
+        delete_event(account, make_config(), "ZZZ:QQQ")
+
+
+def test_delete_event_ews_permission_error_translated():
+    from exchangelib.errors import ErrorAccessDenied
+
+    item = make_writable_event(delete_error=ErrorAccessDenied("nope"))
+    account = FakeWriteAccount(item)
+    with pytest.raises(PermissionDeniedError):
+        delete_event(account, make_config(), "AAA:CCC")
 
 
 def test_update_event_ews_permission_error_translated():

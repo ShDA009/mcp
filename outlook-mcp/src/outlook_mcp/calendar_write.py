@@ -282,3 +282,36 @@ def update_event(
     result = format_event_details(item, config.timezone)
     result["invitations_sent"] = will_send
     return result
+
+
+def delete_event(
+    account,
+    config: Config,
+    event_id: str,
+    *,
+    send_cancellations: bool = True,
+    scope: str = _OCCURRENCE_SCOPE,
+) -> dict:
+    item = _load_item(account, event_id)
+    _ensure_writable(item, config, scope)
+
+    # Read the subject before deleting - afterwards the item is gone, and the
+    # caller needs to be able to say *what* was cancelled.
+    subject = getattr(item, "subject", None)
+    will_send = bool(send_cancellations and _has_attendees(item))
+
+    try:
+        item.delete(
+            send_meeting_cancellations=(
+                SEND_TO_ALL_AND_SAVE_COPY if will_send else SEND_TO_NONE
+            )
+        )
+    except Exception as exc:
+        raise _translate_write_error(exc) from exc
+
+    return {
+        "deleted": True,
+        "event_id": event_id,
+        "subject": subject,
+        "cancellations_sent": will_send,
+    }
