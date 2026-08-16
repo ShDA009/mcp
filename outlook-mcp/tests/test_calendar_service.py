@@ -128,18 +128,20 @@ def test_get_event_by_id_fetches_with_changekey():
     assert result["event_id"] == "AAA:CCC"
 
 
-def test_get_event_by_id_falls_back_when_changekey_stale():
+def test_get_event_by_id_stale_changekey_raises_with_hint():
     event = make_event(subject="Recovered", item_id="AAA", changekey="NEWKEY")
     account = FakeAccount([event], fetch_error=ErrorInvalidChangeKey("stale"))
-    result = get_event_by_id(account, "AAA:OLDKEY", make_config())
-    assert result["subject"] == "Recovered"
+    with pytest.raises(ItemNotFoundError) as excinfo:
+        get_event_by_id(account, "AAA:OLDKEY", make_config())
+    assert "list_events" in str(excinfo.value)
 
 
-def test_get_event_by_id_without_changekey_scans_calendar():
+def test_get_event_by_id_without_changekey_raises_with_hint():
     event = make_event(subject="NoKey", item_id="AAA", changekey="X")
     account = FakeAccount([event])
-    result = get_event_by_id(account, "AAA", make_config())
-    assert result["subject"] == "NoKey"
+    with pytest.raises(ItemNotFoundError) as excinfo:
+        get_event_by_id(account, "AAA", make_config())
+    assert "ChangeKey" in str(excinfo.value)
 
 
 def test_get_event_by_id_not_found_raises():
@@ -148,58 +150,43 @@ def test_get_event_by_id_not_found_raises():
         get_event_by_id(account, "MISSING:KEY", make_config())
 
 
-def test_id_resolution_scan_is_capped_and_widens():
-    # Ящик с бесконечными сериями: без max_items и с окном +-180 дней EWS
-    # отвечал ErrorExceededFindCountLimit вместо результата.
-    calls = []
+def test_stale_changekey_reports_actionable_error_without_scanning():
+    # Скан календаря убран: на ящике с бесконечными сериями он стоил десятки
+    # секунд (а иногда падал с ErrorExceededFindCountLimit) ради случая,
+    # который вызывающий чинит одним повторным list_events.
+    scanned = []
 
     class RecordingCalendar:
-        def view(self, start, end, max_items=None):
-            calls.append(((end - start).days, max_items))
+        def view(self, **kwargs):
+            scanned.append(kwargs)
+            return FakeQuerySet([])
+
+        def filter(self, **kwargs):
+            scanned.append(kwargs)
             return FakeQuerySet([])
 
     class Acc:
         calendar = RecordingCalendar()
 
         def fetch(self, ids):
-            return []
+            raise ErrorInvalidChangeKey("stale")
 
-    with pytest.raises(ItemNotFoundError):
-        get_event_by_id(Acc(), "NOPE:KEY", make_config())
+    with pytest.raises(ItemNotFoundError) as excinfo:
+        get_event_by_id(Acc(), "AAA:OLDKEY", make_config())
+    assert "list_events" in str(excinfo.value)
+    assert scanned == [], "календарь не должен перебираться"
 
-    assert [c[0] for c in calls] == [14, 60, 180], "окно должно расширяться"
-    assert all(c[1] == 1000 for c in calls), "каждый запрос должен быть ограничен"
 
-
-def test_id_resolution_stops_at_first_window_that_matches():
-    calls = []
-    event = make_event(subject="Near", item_id="AAA", changekey="K")
-
-    class RecordingCalendar:
-        def view(self, start, end, max_items=None):
-            calls.append((end - start).days)
-            return FakeQuerySet([event])
-
+def test_id_without_changekey_is_rejected_with_hint():
     class Acc:
-        calendar = RecordingCalendar()
+        calendar = None
 
         def fetch(self, ids):
-            return []
+            raise AssertionError("fetch не должен вызываться без changekey")
 
-    result = get_event_by_id(Acc(), "AAA", make_config())
-    assert result["subject"] == "Near"
-    assert calls == [14], "найдя встречу в ближнем окне, дальше искать не нужно"
-
-
-def test_get_event_by_id_falls_back_for_series_occurrence():
-    # Перенос экземпляра серии превращает его в Exception и меняет id. EWS
-    # filter() экземпляры серий не возвращает, поэтому fallback-скан обязан
-    # идти через view() - иначе такая встреча становится недостижимой.
-    event = make_event(subject="Moved daily", item_id="OCC", changekey="NEWKEY")
-    event.type = "Exception"
-    account = FakeAccount([event], fetch_error=ErrorInvalidChangeKey("stale"))
-    result = get_event_by_id(account, "OCC:OLDKEY", make_config())
-    assert result["subject"] == "Moved daily"
+    with pytest.raises(ItemNotFoundError) as excinfo:
+        get_event_by_id(Acc(), "AAA", make_config())
+    assert "list_events" in str(excinfo.value)
 
 
 _EWS_WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")

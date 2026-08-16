@@ -395,6 +395,10 @@ if _config.allow_write:
         update. This matters most for a move: a rescheduled meeting nobody was
         told about breaks other people's day.
 
+        An event_id goes stale as soon as the event is modified - by you or by
+        anybody else. On "item_not_found", call list_events again and retry with
+        the fresh event_id rather than reusing an older one.
+
         The event_id in the result may differ from the one passed in (Exchange
         reissues it when an occurrence is updated) - use the returned one from
         then on.

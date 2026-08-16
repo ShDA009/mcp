@@ -15,11 +15,11 @@ from exchangelib.items import (
     SEND_TO_NONE,
 )
 
-from .calendar_service import _fetch_one, _find_by_id_in_calendar
+from .calendar_service import load_event
 from .config import Config
-from .errors import InvalidArgumentError, ItemNotFoundError, PermissionDeniedError
+from .errors import InvalidArgumentError, PermissionDeniedError
 from .ews_client import translate_ews_error
-from .formatting import decode_item_id, format_event_details
+from .formatting import format_event_details
 
 logger = logging.getLogger(__name__)
 
@@ -162,21 +162,6 @@ def create_event(
     return result
 
 
-def _load_item(account, event_id: str):
-    """Fetch a calendar item by event_id, re-resolving a stale ChangeKey."""
-    item_id, changekey = decode_item_id(event_id)
-
-    item = None
-    stale_changekey = False
-    if changekey:
-        item, stale_changekey = _fetch_one(account, item_id, changekey)
-    if item is None and (stale_changekey or not changekey):
-        item = _find_by_id_in_calendar(account, item_id)
-    if item is None:
-        raise ItemNotFoundError(f"Event with id {event_id!r} was not found")
-    return item
-
-
 def _ensure_writable(item, config: Config, scope: str) -> None:
     """Reject writes we deliberately do not support, before touching EWS."""
     if scope != _OCCURRENCE_SCOPE:
@@ -254,7 +239,7 @@ def update_event(
     send_invitations: bool = True,
     scope: str = _OCCURRENCE_SCOPE,
 ) -> dict:
-    item = _load_item(account, event_id)
+    item = load_event(account, event_id)
     _ensure_writable(item, config, scope)
 
     # Whether anybody needs telling is decided by the attendees the meeting had
@@ -307,7 +292,7 @@ def delete_event(
     send_cancellations: bool = True,
     scope: str = _OCCURRENCE_SCOPE,
 ) -> dict:
-    item = _load_item(account, event_id)
+    item = load_event(account, event_id)
     _ensure_writable(item, config, scope)
 
     # Read the subject before deleting - afterwards the item is gone, and the

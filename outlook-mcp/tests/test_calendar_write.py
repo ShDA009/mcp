@@ -458,24 +458,23 @@ def test_update_event_missing_item_raises_not_found():
         update_event(account, make_config(), "ZZZ:QQQ", subject="Ghost")
 
 
-def test_update_event_resolves_stale_changekey_via_calendar_scan():
+def test_update_event_stale_changekey_raises_with_hint():
+    # Скан календаря убран: на ящике с бесконечными сериями он стоил десятки
+    # секунд ради случая, который клиент чинит одним повторным list_events.
     item = make_writable_event(item_id="AAA", changekey="FRESH")
-    # fetch() ничего не отдаёт (ChangeKey устарел) — item находится сканом
     account = FakeWriteAccount(None, calendar_items=[item])
-    update_event(account, make_config(), "AAA:STALE", subject="Recovered")
-    assert item.subject == "Recovered"
-    assert item.saved_with is not None
+    with pytest.raises(ItemNotFoundError) as excinfo:
+        update_event(account, make_config(), "AAA:STALE", subject="Recovered")
+    assert "list_events" in str(excinfo.value)
+    assert item.saved_with is None
 
 
-def test_update_event_finds_moved_series_occurrence():
-    # Перенос экземпляра серии делает его Exception с новым id. Скан обязан
-    # находить такие встречи, иначе после первого же переноса встреча
-    # становится недоступной для любых дальнейших правок.
-    item = make_writable_event(item_id="OCC", changekey="FRESH", item_type="Exception")
+def test_delete_event_stale_changekey_raises_with_hint():
+    item = make_writable_event(item_id="AAA", changekey="FRESH")
     account = FakeWriteAccount(None, calendar_items=[item])
-    update_event(account, make_config(), "OCC:STALE", subject="Moved again")
-    assert item.subject == "Moved again"
-    assert item.saved_with is not None
+    with pytest.raises(ItemNotFoundError):
+        delete_event(account, make_config(), "AAA:STALE")
+    assert item.deleted_with is None
 
 
 def test_delete_event_sends_cancellations_by_default():

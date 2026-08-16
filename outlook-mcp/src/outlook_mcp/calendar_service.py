@@ -39,23 +39,35 @@ def list_events_for_range(
     return {"events": events, "has_more": has_more}
 
 
+_STALE_ID_HINT = (
+    "The event_id is stale or incomplete (Exchange reissues it whenever an event "
+    "is modified). Call list_events again and use the event_id it returns."
+)
+
+
 def get_event_by_id(account, event_id: str, config: Config) -> dict:
-    item_id, changekey = decode_item_id(event_id)
-
-    item = None
-    stale_changekey = False
-    if changekey:
-        item, stale_changekey = _fetch_one(account, item_id, changekey)
-
-    if item is None and (stale_changekey or not changekey):
-        # ChangeKey may be stale (item was modified after the ID was issued),
-        # or no changekey was supplied at all. Re-resolve by scanning the calendar.
-        item = _find_by_id_in_calendar(account, item_id)
-
-    if item is None:
-        raise ItemNotFoundError(f"Event with id {event_id!r} was not found")
-
+    item = load_event(account, event_id)
     return format_event_details(item, config.timezone)
+
+
+def load_event(account, event_id: str):
+    """Fetch a calendar item by event_id, or raise with an actionable hint.
+
+    EWS needs both the id and a current ChangeKey; a stale one is rejected. We
+    deliberately do NOT scan the calendar to re-resolve it: on a mailbox with
+    never-ending recurring series, view() expands into thousands of occurrences,
+    which cost tens of seconds and made EWS answer ErrorExceededFindCountLimit.
+    The caller fixes a stale id with a single list_events call instead.
+    """
+    item_id, changekey = decode_item_id(event_id)
+    if not changekey:
+        raise ItemNotFoundError(f"Event id {event_id!r} has no ChangeKey. {_STALE_ID_HINT}")
+
+    item, stale = _fetch_one(account, item_id, changekey)
+    if item is None:
+        detail = _STALE_ID_HINT if stale else ""
+        raise ItemNotFoundError(f"Event with id {event_id!r} was not found. {detail}".strip())
+    return item
 
 
 def _fetch_one(account, item_id: str, changekey: str):
@@ -76,43 +88,6 @@ def _fetch_one(account, item_id: str, changekey: str):
     return result, False
 
 
-# Widening windows, in days around today. Measured on a real mailbox with
-# several never-ending recurring series: +-7d is ~100 expanded occurrences
-# (~20s), +-30d is ~400 (~80s), and +-90d blows past 1000 items - an unbounded
-# +-180d scan is what made EWS answer ErrorExceededFindCountLimit outright.
-# Nearly every real lookup hits the first window, so the wide ones are a rarely
-# paid fallback rather than the normal cost.
-_ID_RESOLUTION_WINDOWS_DAYS = (7, 30, 90)
-_ID_RESOLUTION_MAX_ITEMS = 1000
-
-
-def _find_by_id_in_calendar(account, item_id: str):
-    """Re-resolve an item by id when its ChangeKey is stale or absent.
-
-    Uses view(), not filter(): EWS FindItem returns only the RecurringMaster of
-    a series, so a moved occurrence (which Exchange turns into an Exception with
-    a fresh id) would never be found by a filter() scan. view() expands the
-    series into individual occurrences, which is exactly what must be findable.
-
-    That expansion is also why the scan is windowed and capped: a mailbox with
-    never-ending series produces thousands of occurrences over a wide range, and
-    EWS rejects the request instead of truncating it.
-    """
-    tz = ZoneInfo("UTC")
-    now = datetime.now(tz)
-    for days in _ID_RESOLUTION_WINDOWS_DAYS:
-        try:
-            qs = account.calendar.view(
-                start=now - timedelta(days=days),
-                end=now + timedelta(days=days),
-                max_items=_ID_RESOLUTION_MAX_ITEMS,
-            )
-            for item in qs:
-                if item.id == item_id:
-                    return item
-        except Exception as exc:
-            raise translate_ews_error(exc) from exc
-    return None
 
 
 _WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]

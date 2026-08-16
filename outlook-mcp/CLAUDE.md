@@ -39,17 +39,17 @@ MCP-сервер к on-prem Exchange по EWS (SOAP/NTLM), для потреби
   **`format_event_summary` отдаёт `attendees_count`, а не список участников**
   (полный список — только в `format_event_details`), см. решение ниже.
 - `src/outlook_mcp/calendar_service.py` — запросы к `account.calendar`:
-  `list_events_for_range` (диапазон дат), `get_event_by_id` (одиночный item
-  по `event_id`, с fallback-разрешением устаревшего ChangeKey) и
-  `find_free_slots` (через `exchangelib.services.GetUserAvailability`).
+  `list_events_for_range` (диапазон дат), `load_event`/`get_event_by_id`
+  (одиночный item по `event_id`; при устаревшем ChangeKey — ошибка с
+  подсказкой, календарь не сканируется) и `find_free_slots` (через
+  `exchangelib.services.GetUserAvailability`).
 - `src/outlook_mcp/calendar_write.py` — запись в календарь: `create_event`,
   `update_event`, `delete_event`, плюс парсинг времени (`parse_datetime`,
-  `parse_date_only`) и общие проверки (`_load_item`, `_ensure_writable`,
+  `parse_date_only`) и общие проверки (`_ensure_writable`,
   `_translate_write_error`). Вынесен отдельно от `calendar_service.py`
   осознанно: тот уже 574 строки и почти целиком занят алгоритмом
-  `find_free_slots`. Из `calendar_service.py` переиспользуются `_fetch_one`
-  и `_find_by_id_in_calendar` (fallback по устаревшему ChangeKey) — их
-  нельзя дублировать, это уже отлаженная на живом сервере логика.
+  `find_free_slots`. Получение item по `event_id` — общее с чтением:
+  `load_event` из `calendar_service.py`, дублировать его нельзя.
 - `src/outlook_mcp/directory_service.py` — `resolve_person`: поиск email по
   (частичному) имени через `account.protocol.resolve_names` (EWS
   `ResolveNames`, поиск по ГАБ). "Ничего не найдено" — штатный исход
@@ -59,8 +59,9 @@ MCP-сервер к on-prem Exchange по EWS (SOAP/NTLM), для потреби
 - `src/outlook_mcp/mail_service.py` — запросы к почтовым папкам
   (`inbox`/`sent`/`drafts`/`junk`/`deleted` через `_FOLDER_ATTRS`):
   `list_emails`, `search_emails` (через `exchangelib.restriction.Q` по
-  теме/отправителю/телу), `get_email_by_id` (тот же паттерн
-  fetch-с-changekey + fallback-скан, что и в `calendar_service.py`).
+  теме/отправителю/телу), `get_email_by_id` (fetch-с-changekey, а при
+  устаревшем ключе — скан папки; у писем нет серий, поэтому такой fallback
+  здесь дёшев и оставлен, в отличие от календаря).
 - `src/outlook_mcp/server.py` — регистрация MCP tools (`FastMCP`), точка входа.
   `main()` также обрабатывает `--help`/`-h`: печатает справку и завершается
   **не открывая stdio-сессию** (иначе процесс завис бы в ожидании ввода) —
@@ -103,16 +104,29 @@ MCP-сервер к on-prem Exchange по EWS (SOAP/NTLM), для потреби
 - **event_id** — это `"{item_id}:{changekey}"` (см. `encode_item_id` /
   `decode_item_id` в `formatting.py`). ChangeKey нужен для повторного чтения
   item в `get_event` — при изменении item старый ChangeKey может быть невалиден.
-- **get_event и устаревший ChangeKey**: EWS требует и `id`, и `changekey`
-  вместе (`ItemId` — обязательная пара полей в протоколе), поэтому
-  `account.fetch(ids=[(id, changekey)])` — единственный способ получить item
-  по ID напрямую. Если changekey устарел (`ErrorInvalidChangeKey`/
-  `ErrorItemNotFound`/`ErrorInvalidIdMalformed`) или вовсе не был передан,
-  `get_event_by_id` в `calendar_service.py` делает fallback: сканирует
-  календарь в окне ±180 дней от сегодня (`_ID_RESOLUTION_WINDOW_DAYS`) и
-  ищет item с совпадающим `id`. exchangelib не поддерживает фильтрацию
-  `.filter(id=...)` — `id`/`changekey` не обычные поля item, поэтому только
-  полный перебор внутри окна.
+- **Устаревший ChangeKey: ошибка с подсказкой, а не поиск по календарю.**
+  EWS требует `id` и `changekey` вместе (`ItemId` — обязательная пара полей
+  в протоколе), поэтому `account.fetch(ids=[(id, changekey)])` —
+  единственный способ получить item по ID напрямую; голый id отвергается
+  как `ErrorInvalidIdMalformed` (проверено вживую). ChangeKey — версия
+  объекта, Exchange меняет её при каждой правке встречи.
+  Раньше на этот случай был fallback-скан календаря
+  (`_find_by_id_in_calendar`). **Он удалён целиком**, и возвращать его не
+  надо. История: скан на `filter()` не видел экземпляры серий вообще →
+  перевели на `view()` → на реальном ящике `view()` в широком окне уткнулся
+  в `ErrorExceededFindCountLimit` (повторяющиеся встречи **без конечной
+  даты** разворачиваются в экземпляр на день) → сузили окно и добавили
+  `max_items` → всё равно 14–80 секунд и потолок ±90 дней. Итог: механизм
+  давал два бага, десятки секунд задержки и всё равно не покрывал давние
+  встречи — ради случая, который вызывающий чинит одним повторным
+  `list_events`.
+  Теперь `load_event` (`calendar_service.py`, используется и `get_event`, и
+  всеми пишущими tools) при отсутствующем/протухшем ChangeKey сразу кидает
+  `ItemNotFoundError` с текстом «вызови list_events и возьми свежий
+  event_id». Замер на живом ящике: свежий id — 0.28с, протухший — 0.09с
+  (было ~14с в лучшем случае).
+  В `mail_service.py` аналогичный скан **оставлен** — у писем нет серий,
+  `filter()` там работает корректно и дёшево.
 - **`translate_ews_error` не должен сваливать всё в «check VPN/network».**
   Любой `TransportError` раньше превращался в
   `connection_unavailable: "Could not reach EWS endpoint (check VPN/network)"`,
@@ -333,36 +347,13 @@ MCP-сервер к on-prem Exchange по EWS (SOAP/NTLM), для потреби
   больше, чем limit" (`has_more`). Это правило актуально для любого нового
   tool, который листает папку/календарь — никогда не делать `list(qs)` без
   среза, если объём результата не гарантированно мал.
-- **`_find_by_id_in_calendar` тоже обязан быть на `view()`, а не `filter()`.**
-  Найдено на живом календаре: пользователь перенёс экземпляр повторяющейся
-  встречи, Exchange превратил его в `Exception` и выдал новый id — после чего
-  встреча стала недостижима: ни `get_event`, ни `update_event`, ни
-  `delete_event` не находили её **ни по старому, ни по новому id**. Причина
-  та же, что у `list_events` ниже: `filter()` (EWS `FindItem`) возвращает
-  только `RecurringMaster`, экземпляры серий в него не попадают, поэтому
-  fallback-скан по устаревшему ChangeKey для `Occurrence`/`Exception` не
-  срабатывал **никогда** — с самой первой реализации. Исправлено переходом
-  на `account.calendar.view(start=..., end=...)`.
-  Баг не поймали ~200 зелёных тестов, потому что `FakeCalendar.filter()` в
-  `tests/test_calendar_service.py` возвращал **все** переданные items,
-  включая экземпляры серий — то есть фейк не воспроизводил контракт EWS
-  (тот же класс ошибки, что с `WorkingPeriod.weekdays`). Теперь `filter()`
-  в фейке отсеивает `Occurrence`/`Exception`, как настоящий EWS.
-  **Окно скана расширяющееся и ограниченное `max_items`**
-  (`_ID_RESOLUTION_WINDOWS_DAYS = (7, 30, 90)`,
-  `_ID_RESOLUTION_MAX_ITEMS = 1000`). Первая версия фикса делала один
-  проход ±180 дней без `max_items` — на живом ящике это сразу дало
-  `ErrorExceededFindCountLimit` («use paging to reduce the result size»),
-  то есть встреча по-прежнему была недоступна, только с другой ошибкой.
-  Причина — **повторяющиеся встречи без конечной даты**: `view()`
-  разворачивает каждую в экземпляр на день, и окно линейно множит их.
-  Замерено на реальном ящике: ±7 дней — 102 объекта (~19с), ±30 дней —
-  413 (~80с), ±90 дней — упирается в `max_items=1000`. При `timeout: 60`
-  в конфиге Cline даже ±30 дней не укладывается, поэтому скан начинается
-  с ближнего окна и расширяется только при промахе; типичный случай
-  (недавняя встреча) находится в первом окне. Проверено вживую:
-  экземпляр серии с испорченным ChangeKey находится за ~14с.
-  Не возвращаться на `filter()` и не убирать `max_items`.
+- **`FakeCalendar.filter()` в тестах обязан отсеивать экземпляры серий.**
+  Фейк возвращал **все** переданные items, включая `Occurrence`/`Exception`,
+  то есть не воспроизводил контракт EWS `FindItem` (тот же класс ошибки, что
+  с `WorkingPeriod.weekdays`). Из-за этого ~200 зелёных тестов не замечали,
+  что поиск по календарю не видит экземпляры серий. Сам поиск с тех пор
+  удалён (см. «Устаревший ChangeKey» выше), но фейк исправлен и должен
+  таким остаться — на нём держатся тесты `list_events`.
 - **list_events и повторяющиеся встречи (`view()` vs `filter()`)**:
   `account.calendar.filter(...)` возвращает только `RecurringMaster` — одну
   запись серии с её *исходными* start/end, поэтому регулярные встречи либо
@@ -377,8 +368,7 @@ MCP-сервер к on-prem Exchange по EWS (SOAP/NTLM), для потреби
   (2) EWS запрещает комбинировать `CalendarView` с restrictions, поэтому
   `.order_by("-start")` пришлось убрать — `list_events` теперь отдаёт
   события в хронологическом порядке (по возрастанию `start`), а не в
-  обратном. `_find_by_id_in_calendar` (fallback-скан по ChangeKey) осознанно
-  остался на `filter()` — там как раз нужен master, чтобы резолвить id.
+  обратном.
   `format_event_summary` теперь всегда отдаёт `is_recurring` и `item_type`
   (`Single`/`Occurrence`/`Exception`/`RecurringMaster`), а не только
   `format_event_details` — иначе клиент не может отличить экземпляр серии
@@ -531,10 +521,8 @@ MCP-сервер к on-prem Exchange по EWS (SOAP/NTLM), для потреби
 - **`FakeWriteAccount` обязан отдавать календарь.** Первая версия фейка
   имела `calendar = None`, и тест «item не найден» падал не там, где
   ожидалось: при пустом `fetch()` продакшн-код уходит в
-  `_find_by_id_in_calendar` (ChangeKey мог устареть). Это правильное
-  поведение, поэтому фейк получил пустой календарь, а заодно появился тест
-  `test_update_event_resolves_stale_changekey_via_calendar_scan` на сам
-  fallback.
+  скан календаря (ChangeKey мог устареть). Скан с тех пор удалён, но фейк
+  сохранил календарь — на нём держатся тесты чтения.
 
 ## Тесты, Docker, ручная проверка EWS, ограничения проекта
 
