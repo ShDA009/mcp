@@ -34,11 +34,19 @@ def format_attendee(attendee, timezone: str) -> dict:
     }
 
 
-def format_event_summary(item, timezone: str) -> dict:
-    organizer = getattr(item, "organizer", None)
+def _all_attendees(item) -> list:
     required = getattr(item, "required_attendees", None) or []
     optional = getattr(item, "optional_attendees", None) or []
-    attendees = [format_attendee(a, timezone) for a in list(required) + list(optional)]
+    return list(required) + list(optional)
+
+
+def format_event_summary(item, timezone: str) -> dict:
+    organizer = getattr(item, "organizer", None)
+    # Only the count, never the list: a day's worth of meetings with 10-16
+    # attendees each spent most of the response on names, and the serialised
+    # result ran into the client's output size limit and got truncated
+    # mid-list. The full roster lives in format_event_details / get_event.
+    attendees_count = len(_all_attendees(item))
 
     return {
         "event_id": encode_item_id(item),
@@ -51,7 +59,7 @@ def format_event_summary(item, timezone: str) -> dict:
         }
         if organizer
         else None,
-        "attendees": attendees,
+        "attendees_count": attendees_count,
         "response_status": map_response_status(getattr(item, "my_response_type", None)),
         "location": getattr(item, "location", None),
         "is_recurring": getattr(item, "is_recurring", False) or bool(
@@ -65,7 +73,12 @@ def format_event_summary(item, timezone: str) -> dict:
 def format_event_details(item, timezone: str) -> dict:
     summary = format_event_summary(item, timezone)
     body = getattr(item, "body", None)
-    summary.update({"body": _body_to_text(body)})
+    summary.update(
+        {
+            "attendees": [format_attendee(a, timezone) for a in _all_attendees(item)],
+            "body": _body_to_text(body),
+        }
+    )
     return summary
 
 

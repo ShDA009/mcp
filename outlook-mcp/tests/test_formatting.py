@@ -66,19 +66,46 @@ def test_format_event_summary_normal_event():
     assert result["location"] == "Room 1"
 
 
-def test_format_event_summary_multiple_attendees_with_statuses():
-    attendees = [
+def _three_attendees():
+    return [
         FakeAttendee(mailbox=FakeMailbox("Alice", "alice@example.com"), response_type="Accept"),
         FakeAttendee(mailbox=FakeMailbox("Bob", "bob@example.com"), response_type="Decline"),
         FakeAttendee(mailbox=FakeMailbox("Carl", "carl@example.com"), response_type="Tentative"),
     ]
-    event = make_event(attendees=attendees)
-    result = format_event_summary(event, "Europe/Moscow")
+
+
+def test_format_event_details_multiple_attendees_with_statuses():
+    event = make_event(attendees=_three_attendees())
+    result = format_event_details(event, "Europe/Moscow")
     assert len(result["attendees"]) == 3
     statuses = {a["email"]: a["response_status"] for a in result["attendees"]}
     assert statuses["alice@example.com"] == "accepted"
     assert statuses["bob@example.com"] == "declined"
     assert statuses["carl@example.com"] == "tentative"
+
+
+def test_format_event_summary_counts_attendees_instead_of_listing_them():
+    # Полный список участников — только в get_event: в сводке дня он занимал
+    # до 70% ответа и упирался в лимит размера на стороне клиента.
+    event = make_event(attendees=_three_attendees())
+    result = format_event_summary(event, "Europe/Moscow")
+    assert result["attendees_count"] == 3
+    assert "attendees" not in result
+
+
+def test_format_event_summary_counts_optional_attendees_too():
+    event = make_event(attendees=_three_attendees())
+    event.optional_attendees = [
+        FakeAttendee(mailbox=FakeMailbox("Dana", "dana@example.com"), response_type="Accept")
+    ]
+    result = format_event_summary(event, "Europe/Moscow")
+    assert result["attendees_count"] == 4
+
+
+def test_format_event_summary_without_attendees_counts_zero():
+    event = make_event(attendees=[])
+    result = format_event_summary(event, "Europe/Moscow")
+    assert result["attendees_count"] == 0
 
 
 def test_format_event_summary_includes_recurrence_fields():

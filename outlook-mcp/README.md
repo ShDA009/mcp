@@ -81,8 +81,8 @@ AI-модели).
 
 | Tool | Параметры | Описание |
 |---|---|---|
-| `list_events` | `target_date?: str (YYYY-MM-DD)`, `end_date?: str (YYYY-MM-DD)`, `limit?: int` | Встречи за день или диапазон дат (по умолчанию — сегодня), время в `Europe/Moscow`. `limit` ограничивает число событий (по умолчанию `OUTLOOK_MCP_DEFAULT_LIMIT`); `has_more: true` означает, что в диапазоне есть ещё события |
-| `get_event` | `event_id: str` | Полные детали встречи: тело, участники, локация, признак повторяемости |
+| `list_events` | `target_date?: str (YYYY-MM-DD)`, `end_date?: str (YYYY-MM-DD)`, `limit?: int` | Встречи за день или диапазон дат (по умолчанию — сегодня), время в `Europe/Moscow`. Вместо списка участников — `attendees_count` (полный список в `get_event`). `limit` ограничивает число событий (по умолчанию `OUTLOOK_MCP_DEFAULT_LIMIT`); `has_more: true` означает, что в диапазоне есть ещё события |
+| `get_event` | `event_id: str` | Полные детали встречи: тело, **полный список участников**, локация, признак повторяемости |
 | `find_free_slots` | `target_date: str (YYYY-MM-DD)`, `duration_min: int`, `emails?: list[str]`, `include_self?: bool = true`, `debug?: bool = false` | Свободные окна нужной длительности в рабочие часы дня (рабочие часы читаются из настроек Exchange через `GetUserAvailability`). Если передан `emails`, ищутся окна, свободные одновременно у указанных коллег (и у своего ящика, если `include_self=true`); рабочие часы всегда берутся из своего ящика. Встречи «под вопросом» (`Tentative`) отдельно перечислены в `tentative_slots`. Пустой `slots` всегда сопровождается полем `reason`, объясняющим причину; `debug=true` добавляет подробную диагностику free/busy для отладки |
 | `resolve_person` | `query: str` | Поиск email по (частичному) имени в адресной книге Exchange (EWS `ResolveNames`). Возвращает список кандидатов `{name, email}`; при отсутствии совпадений — пустой список, не ошибка. Используется перед `find_free_slots`, когда известно только имя, а не email |
 | `list_emails` | `folder="Inbox"`, `start_date?`, `end_date?`, `unread_only=false`, `limit?` | Письма в папке (`Inbox`/`Sent`/`Drafts`/`Junk`/`Deleted`), с фильтром по дате и признаку прочтения |
@@ -130,7 +130,7 @@ AI-модели).
       "start": "2026-07-15T13:00:00+03:00",
       "end": "2026-07-15T14:00:00+03:00",
       "organizer": {"name": "Boss", "email": "boss@example.com"},
-      "attendees": [{"name": "Alice", "email": "alice@example.com", "response_status": "accepted"}],
+      "attendees_count": 3,
       "response_status": "accepted",
       "location": "Room 1"
     }

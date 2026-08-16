@@ -97,6 +97,10 @@ def list_events(
     limit - maximum number of events to return (defaults to the server's own
     default). "has_more": true in the result means the range holds more events
     than were returned - narrow the range or raise the limit to see the rest.
+
+    Each event carries "attendees_count", not the attendee list: a full day of
+    meetings with a dozen people each would otherwise overflow the response.
+    Call get_event with the event_id when you need to know who is invited.
     """
     try:
         start = _parse_date(target_date, "target_date") or date.today()
