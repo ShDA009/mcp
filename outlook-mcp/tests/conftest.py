@@ -177,13 +177,18 @@ def make_writable_event(
 
 
 class _FakeWriteCalendar:
-    """Calendar stub backing the stale-ChangeKey fallback scan."""
+    """Calendar stub backing the stale-ChangeKey fallback scan.
+
+    The scan goes through view(), which is what expands a recurring series into
+    individual occurrences - filter() would only ever yield the series master.
+    """
 
     def __init__(self, items):
         self._items = items
 
-    def filter(self, **_kwargs):
-        return list(self._items)
+    def view(self, start, end, max_items=None):
+        items = self._items if max_items is None else self._items[:max_items]
+        return list(items)
 
 
 class FakeWriteAccount:

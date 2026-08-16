@@ -467,6 +467,17 @@ def test_update_event_resolves_stale_changekey_via_calendar_scan():
     assert item.saved_with is not None
 
 
+def test_update_event_finds_moved_series_occurrence():
+    # Перенос экземпляра серии делает его Exception с новым id. Скан обязан
+    # находить такие встречи, иначе после первого же переноса встреча
+    # становится недоступной для любых дальнейших правок.
+    item = make_writable_event(item_id="OCC", changekey="FRESH", item_type="Exception")
+    account = FakeWriteAccount(None, calendar_items=[item])
+    update_event(account, make_config(), "OCC:STALE", subject="Moved again")
+    assert item.subject == "Moved again"
+    assert item.saved_with is not None
+
+
 def test_delete_event_sends_cancellations_by_default():
     item = make_writable_event(subject="Standup")
     account = FakeWriteAccount(item)

@@ -80,13 +80,20 @@ _ID_RESOLUTION_WINDOW_DAYS = 180
 
 
 def _find_by_id_in_calendar(account, item_id: str):
+    """Re-resolve an item by id when its ChangeKey is stale or absent.
+
+    Uses view(), not filter(): EWS FindItem returns only the RecurringMaster of
+    a series, so a moved or otherwise modified occurrence (which Exchange turns
+    into an Exception with a fresh id) would never be found by a filter() scan.
+    view() expands the series into individual occurrences inside the window,
+    which is exactly what has to be searchable here.
+    """
     tz = ZoneInfo("UTC")
     now = datetime.now(tz)
     window_start = now - timedelta(days=_ID_RESOLUTION_WINDOW_DAYS)
     window_end = now + timedelta(days=_ID_RESOLUTION_WINDOW_DAYS)
     try:
-        qs = account.calendar.filter(start__lt=window_end, end__gt=window_start)
-        for item in qs:
+        for item in account.calendar.view(start=window_start, end=window_end):
             if item.id == item_id:
                 return item
     except Exception as exc:

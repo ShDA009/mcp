@@ -32,7 +32,12 @@ class FakeCalendar:
         self._items = items
 
     def filter(self, **_kwargs):
-        return FakeQuerySet(self._items)
+        # Как настоящий EWS FindItem: экземпляры серии не разворачиваются,
+        # видны только одиночные встречи и RecurringMaster. Фейк, отдававший
+        # здесь всё подряд, скрывал баг в _find_by_id_in_calendar.
+        return FakeQuerySet(
+            [i for i in self._items if getattr(i, "type", "Single") not in ("Occurrence", "Exception")]
+        )
 
     def view(self, start, end, max_items=None):
         items = self._items if max_items is None else self._items[:max_items]
@@ -141,6 +146,17 @@ def test_get_event_by_id_not_found_raises():
     account = FakeAccount([], fetch_result=None)
     with pytest.raises(ItemNotFoundError):
         get_event_by_id(account, "MISSING:KEY", make_config())
+
+
+def test_get_event_by_id_falls_back_for_series_occurrence():
+    # Перенос экземпляра серии превращает его в Exception и меняет id. EWS
+    # filter() экземпляры серий не возвращает, поэтому fallback-скан обязан
+    # идти через view() - иначе такая встреча становится недостижимой.
+    event = make_event(subject="Moved daily", item_id="OCC", changekey="NEWKEY")
+    event.type = "Exception"
+    account = FakeAccount([event], fetch_error=ErrorInvalidChangeKey("stale"))
+    result = get_event_by_id(account, "OCC:OLDKEY", make_config())
+    assert result["subject"] == "Moved daily"
 
 
 _EWS_WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
