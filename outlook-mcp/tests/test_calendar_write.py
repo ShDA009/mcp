@@ -18,7 +18,14 @@ from outlook_mcp.errors import (
     PermissionDeniedError,
 )
 
-from .conftest import FakeWriteAccount, RecordingCalendarItem, make_writable_event, utc_dt
+from .conftest import (
+    FakeAttendee,
+    FakeMailbox,
+    FakeWriteAccount,
+    RecordingCalendarItem,
+    make_writable_event,
+    utc_dt,
+)
 
 
 def make_config(timezone="Europe/Moscow", email="me@example.com"):
@@ -328,8 +335,64 @@ def test_update_event_sends_invitations_by_default():
     item = make_writable_event()
     account = FakeWriteAccount(item)
     result = update_event(account, make_config(), "AAA:CCC", subject="Moved")
-    assert item.saved_with["send_meeting_invitations"] == "SendToAllAndSaveCopy"
+    # Как в Outlook: уведомляются только затронутые изменением, а не все подряд
+    assert item.saved_with["send_meeting_invitations"] == "SendToChangedAndSaveCopy"
     assert result["invitations_sent"] is True
+
+
+def test_update_event_replaces_required_attendees():
+    item = make_writable_event()
+    account = FakeWriteAccount(item)
+    update_event(
+        account, make_config(), "AAA:CCC", attendees=["b@example.com", "c@example.com"]
+    )
+    assert item.required_attendees == ["b@example.com", "c@example.com"]
+
+
+def test_update_event_empty_attendees_clears_the_list():
+    item = make_writable_event()
+    account = FakeWriteAccount(item)
+    result = update_event(account, make_config(), "AAA:CCC", attendees=[])
+    assert not item.required_attendees
+    # Удалённый участник обязан получить отмену, хотя после правки список пуст
+    assert result["invitations_sent"] is True
+    assert item.saved_with["send_meeting_invitations"] == "SendToChangedAndSaveCopy"
+
+
+def test_update_event_replaces_optional_attendees():
+    item = make_writable_event()
+    item.optional_attendees = [
+        FakeAttendee(FakeMailbox(name="O", email_address="o@example.com"))
+    ]
+    account = FakeWriteAccount(item)
+    update_event(account, make_config(), "AAA:CCC", optional_attendees=["x@example.com"])
+    assert item.optional_attendees == ["x@example.com"]
+
+
+def test_update_event_empty_optional_attendees_clears_the_list():
+    item = make_writable_event()
+    item.optional_attendees = [
+        FakeAttendee(FakeMailbox(name="O", email_address="o@example.com"))
+    ]
+    account = FakeWriteAccount(item)
+    update_event(account, make_config(), "AAA:CCC", optional_attendees=[])
+    assert not item.optional_attendees
+
+
+def test_update_event_omitted_attendees_are_untouched():
+    item = make_writable_event()
+    original = list(item.required_attendees)
+    account = FakeWriteAccount(item)
+    update_event(account, make_config(), "AAA:CCC", subject="Renamed")
+    assert item.required_attendees == original
+
+
+def test_update_event_clearing_attendees_on_solo_event_sends_nothing():
+    item = make_writable_event(attendees=[])
+    account = FakeWriteAccount(item)
+    result = update_event(account, make_config(), "AAA:CCC", attendees=[])
+    assert result["invitations_sent"] is False
+    assert item.saved_with["send_meeting_invitations"] == "SendToNone"
 
 
 def test_update_event_send_invitations_false():

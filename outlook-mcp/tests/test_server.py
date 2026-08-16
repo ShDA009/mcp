@@ -305,6 +305,27 @@ def test_update_event_omitted_attendees_stay_none():
         server.update_event(event_id="AAA:CCC", subject="Renamed")
     # None означает "не менять участников", пустой список означал бы "убрать всех"
     assert svc.call_args.kwargs["attendees"] is None
+    assert svc.call_args.kwargs["optional_attendees"] is None
+
+
+def test_update_event_empty_attendee_lists_survive_validation():
+    fake_result = {"event_id": "AAA:CCC", "invitations_sent": True}
+    with patch.object(server, "get_account", return_value=object()), patch(
+        "outlook_mcp.server.update_event_svc", return_value=fake_result
+    ) as svc:
+        server.update_event(event_id="AAA:CCC", attendees=[], optional_attendees=[])
+    # [] не должен схлопнуться в None - это разные намерения
+    assert svc.call_args.kwargs["attendees"] == []
+    assert svc.call_args.kwargs["optional_attendees"] == []
+
+
+def test_update_event_normalizes_optional_attendees():
+    fake_result = {"event_id": "AAA:CCC", "invitations_sent": True}
+    with patch.object(server, "get_account", return_value=object()), patch(
+        "outlook_mcp.server.update_event_svc", return_value=fake_result
+    ) as svc:
+        server.update_event(event_id="AAA:CCC", optional_attendees=["B@Example.com"])
+    assert svc.call_args.kwargs["optional_attendees"] == ["b@example.com"]
 
 
 def test_delete_event_passes_flag_to_service():

@@ -355,12 +355,19 @@ if _config.allow_write:
         location: str | None = None,
         body: str | None = None,
         attendees: list[str] | None = None,
+        optional_attendees: list[str] | None = None,
         send_invitations: bool = True,
     ) -> dict:
         """Update an existing calendar event. Only the organizer can do this.
 
         Pass only the fields you want to change; anything left out stays as it
-        is. Fields cannot be cleared - passing an empty subject is an error.
+        is. Text fields cannot be cleared - passing an empty subject is an
+        error.
+
+        attendees/optional_attendees REPLACE the whole list, they do not add or
+        remove individuals: to drop one person from a meeting of three, pass
+        the two who stay. An empty list clears that list entirely. Leaving a
+        parameter out (null) keeps the current list untouched.
 
         Timing: to MOVE the meeting pass start (the duration is preserved and
         end moves with it). To CHANGE ITS LENGTH pass end (start stays put). To
@@ -370,8 +377,10 @@ if _config.allow_write:
         from list_events - this updates that occurrence only. The id of the
         series itself is rejected; editing a whole series is not supported.
 
-        send_invitations - when true (default) attendees are notified of the
-        change, which matters most for a move: a rescheduled meeting nobody was
+        send_invitations - when true (default) the people affected by the change
+        are notified, the same way Outlook does it: someone removed from the
+        meeting gets a cancellation, and attendees who are still on it get the
+        update. This matters most for a move: a rescheduled meeting nobody was
         told about breaks other people's day.
 
         The event_id in the result may differ from the one passed in (Exchange
@@ -379,7 +388,14 @@ if _config.allow_write:
         then on.
         """
         try:
+            # None means "leave this list alone", [] means "clear it" - so the
+            # empty list has to survive validation instead of collapsing to None.
             participants = _validate_emails(attendees) if attendees is not None else None
+            optional = (
+                _validate_emails(optional_attendees)
+                if optional_attendees is not None
+                else None
+            )
             account = get_account()
             result = update_event_svc(
                 account,
@@ -391,6 +407,7 @@ if _config.allow_write:
                 location=location,
                 body=body,
                 attendees=participants,
+                optional_attendees=optional,
                 send_invitations=send_invitations,
             )
             logger.info(

@@ -9,7 +9,11 @@ from exchangelib.errors import (
     ErrorCalendarIsNotOrganizer,
     ErrorCannotDeleteObject,
 )
-from exchangelib.items import SEND_TO_ALL_AND_SAVE_COPY, SEND_TO_NONE
+from exchangelib.items import (
+    SEND_TO_ALL_AND_SAVE_COPY,
+    SEND_TO_CHANGED_AND_SAVE_COPY,
+    SEND_TO_NONE,
+)
 
 from .calendar_service import _fetch_one, _find_by_id_in_calendar
 from .config import Config
@@ -246,11 +250,17 @@ def update_event(
     location: str | None = None,
     body: str | None = None,
     attendees: list[str] | None = None,
+    optional_attendees: list[str] | None = None,
     send_invitations: bool = True,
     scope: str = _OCCURRENCE_SCOPE,
 ) -> dict:
     item = _load_item(account, event_id)
     _ensure_writable(item, config, scope)
+
+    # Whether anybody needs telling is decided by the attendees the meeting had
+    # BEFORE the edit: removing everyone still has to send those people a
+    # cancellation, and by then the item no longer lists them.
+    had_attendees = _has_attendees(item)
 
     if subject is not None:
         if not subject.strip():
@@ -262,16 +272,21 @@ def update_event(
         item.body = body
     if attendees is not None:
         item.required_attendees = list(attendees) or None
+    if optional_attendees is not None:
+        item.optional_attendees = list(optional_attendees) or None
 
     if start is not None or end is not None:
         item.start, item.end = _resolve_new_range(item, start, end, config)
 
-    will_send = bool(send_invitations and _has_attendees(item))
+    will_send = bool(send_invitations and (had_attendees or _has_attendees(item)))
 
     try:
         item.save(
+            # Outlook notifies only the people an edit actually affects, and the
+            # tool should not be noisier than the UI it stands in for: everyone
+            # else would get a pointless mail on every reschedule.
             send_meeting_invitations=(
-                SEND_TO_ALL_AND_SAVE_COPY if will_send else SEND_TO_NONE
+                SEND_TO_CHANGED_AND_SAVE_COPY if will_send else SEND_TO_NONE
             )
         )
     except Exception as exc:
