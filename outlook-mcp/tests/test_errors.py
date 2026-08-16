@@ -39,3 +39,14 @@ def test_translate_unknown_error_passthrough():
     original = ValueError("weird")
     result = translate_ews_error(original)
     assert result is original
+
+
+def test_permission_denied_serializes():
+    from outlook_mcp.errors import OutlookMcpError, PermissionDeniedError
+
+    exc = PermissionDeniedError("Only the organizer can modify this event")
+    assert isinstance(exc, OutlookMcpError)
+    assert exc.to_dict() == {
+        "error": "permission_denied",
+        "message": "Only the organizer can modify this event",
+    }

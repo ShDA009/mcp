@@ -29,3 +29,7 @@ class InvalidArgumentError(OutlookMcpError):
 
 class ConfigurationError(OutlookMcpError):
     code = "configuration_error"
+
+
+class PermissionDeniedError(OutlookMcpError):
+    code = "permission_denied"
