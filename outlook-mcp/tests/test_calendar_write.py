@@ -458,6 +458,49 @@ def test_update_event_missing_item_raises_not_found():
         update_event(account, make_config(), "ZZZ:QQQ", subject="Ghost")
 
 
+def test_update_event_saves_only_changed_fields():
+    # Без update_fields exchangelib отправляет и 'uid', который Exchange не
+    # принимает на экземпляре серии: "Single calendar item or recurring master
+    # is expected" — из-за этого любая правка перенесённой встречи падала.
+    item = make_writable_event(item_type="Exception")
+    account = FakeWriteAccount(item)
+    update_event(account, make_config(), "AAA:CCC", start="2026-08-20T15:00")
+    assert item.saved_with["update_fields"] == ["start", "end"]
+
+
+def test_update_event_update_fields_cover_every_touched_field():
+    item = make_writable_event()
+    account = FakeWriteAccount(item)
+    update_event(
+        account,
+        make_config(),
+        "AAA:CCC",
+        subject="S",
+        location="L",
+        body="B",
+        attendees=["a@example.com"],
+        optional_attendees=["b@example.com"],
+        end="2026-08-20T18:00",
+    )
+    assert set(item.saved_with["update_fields"]) == {
+        "subject",
+        "location",
+        "body",
+        "required_attendees",
+        "optional_attendees",
+        "start",
+        "end",
+    }
+
+
+def test_update_event_without_any_field_is_rejected():
+    item = make_writable_event()
+    account = FakeWriteAccount(item)
+    with pytest.raises(InvalidArgumentError):
+        update_event(account, make_config(), "AAA:CCC")
+    assert item.saved_with is None
+
+
 def test_update_event_stale_changekey_raises_with_hint():
     # Скан календаря убран: на ящике с бесконечными сериями он стоил десятки
     # секунд ради случая, который клиент чинит одним повторным list_events.

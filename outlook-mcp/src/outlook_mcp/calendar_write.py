@@ -247,32 +247,50 @@ def update_event(
     # cancellation, and by then the item no longer lists them.
     had_attendees = _has_attendees(item)
 
+    changed: list[str] = []
     if subject is not None:
         if not subject.strip():
             raise InvalidArgumentError("subject must not be empty")
         item.subject = subject.strip()
+        changed.append("subject")
     if location is not None:
         item.location = location
+        changed.append("location")
     if body is not None:
         item.body = body
+        changed.append("body")
     if attendees is not None:
         item.required_attendees = list(attendees) or None
+        changed.append("required_attendees")
     if optional_attendees is not None:
         item.optional_attendees = list(optional_attendees) or None
+        changed.append("optional_attendees")
 
     if start is not None or end is not None:
         item.start, item.end = _resolve_new_range(item, start, end, config)
+        changed += ["start", "end"]
+
+    if not changed:
+        raise InvalidArgumentError(
+            "Nothing to update: pass at least one field to change"
+        )
 
     will_send = bool(send_invitations and (had_attendees or _has_attendees(item)))
 
     try:
         item.save(
+            # Only the fields we actually touched. Without this exchangelib also
+            # sends 'uid', which Exchange refuses to accept on an occurrence of a
+            # recurring series ("Single calendar item or recurring master is
+            # expected", field calendar:UID) - making every edit of a moved
+            # recurring meeting fail.
+            update_fields=changed,
             # Outlook notifies only the people an edit actually affects, and the
             # tool should not be noisier than the UI it stands in for: everyone
             # else would get a pointless mail on every reschedule.
             send_meeting_invitations=(
                 SEND_TO_CHANGED_AND_SAVE_COPY if will_send else SEND_TO_NONE
-            )
+            ),
         )
     except Exception as exc:
         raise _translate_write_error(exc) from exc
