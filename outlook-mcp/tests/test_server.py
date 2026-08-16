@@ -62,6 +62,31 @@ def test_list_events_happy_path_returns_events():
     assert result == fake_result
 
 
+def test_list_events_passes_limit_to_service():
+    fake_result = {"events": [], "has_more": True}
+    with patch.object(server, "get_account", return_value=object()), patch(
+        "outlook_mcp.server.list_events_for_range", return_value=fake_result
+    ) as svc:
+        server.list_events(target_date="2026-07-15", limit=5)
+    assert svc.call_args.kwargs["limit"] == 5
+
+
+def test_list_events_omitted_limit_stays_none():
+    fake_result = {"events": [], "has_more": False}
+    with patch.object(server, "get_account", return_value=object()), patch(
+        "outlook_mcp.server.list_events_for_range", return_value=fake_result
+    ) as svc:
+        server.list_events(target_date="2026-07-15")
+    # None означает "взять default_limit из конфига"
+    assert svc.call_args.kwargs["limit"] is None
+
+
+def test_list_events_invalid_limit_returns_structured_error():
+    with patch.object(server, "get_account", return_value=object()):
+        result = server.list_events(target_date="2026-07-15", limit=0)
+    assert result["error"] == "invalid_argument"
+
+
 def test_get_event_not_found_returns_structured_error():
     from outlook_mcp.errors import ItemNotFoundError
 

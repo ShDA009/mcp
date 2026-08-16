@@ -85,17 +85,25 @@ def _validate_emails(emails: list[str] | None) -> list[str]:
 
 
 @mcp.tool()
-def list_events(target_date: str | None = None, end_date: str | None = None) -> dict:
+def list_events(
+    target_date: str | None = None,
+    end_date: str | None = None,
+    limit: int | None = None,
+) -> dict:
     """List calendar events for a date or date range (YYYY-MM-DD, defaults to today, Europe/Moscow).
 
     target_date - start of the range (defaults to today).
     end_date - end of the range, inclusive (defaults to target_date, i.e. a single day).
+    limit - maximum number of events to return (defaults to the server's own
+    default). "has_more": true in the result means the range holds more events
+    than were returned - narrow the range or raise the limit to see the rest.
     """
     try:
         start = _parse_date(target_date, "target_date") or date.today()
         end = _parse_date(end_date, "end_date") or start
+        limit = _validate_limit(limit)
         account = get_account()
-        result = list_events_for_range(account, start, end, _config)
+        result = list_events_for_range(account, start, end, _config, limit=limit)
         logger.info("list_events returned %d item(s)", len(result["events"]))
         return result
     except OutlookMcpError as exc:
