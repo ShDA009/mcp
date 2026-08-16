@@ -4,11 +4,20 @@ from zoneinfo import ZoneInfo
 import pytest
 from exchangelib import EWSDate, EWSDateTime
 
-from outlook_mcp.calendar_write import create_event, parse_date_only, parse_datetime
+from outlook_mcp.calendar_write import (
+    create_event,
+    parse_date_only,
+    parse_datetime,
+    update_event,
+)
 from outlook_mcp.config import Config
-from outlook_mcp.errors import InvalidArgumentError
+from outlook_mcp.errors import (
+    InvalidArgumentError,
+    ItemNotFoundError,
+    PermissionDeniedError,
+)
 
-from .conftest import RecordingCalendarItem
+from .conftest import FakeWriteAccount, RecordingCalendarItem, make_writable_event, utc_dt
 
 
 def make_config(timezone="Europe/Moscow", email="me@example.com"):
@@ -253,3 +262,165 @@ def test_create_event_all_day_single_day_allowed():
             all_day=True,
         )
     assert store[0].init_kwargs["start"] == store[0].init_kwargs["end"]
+
+
+def test_update_event_start_only_preserves_duration():
+    item = make_writable_event(
+        start=utc_dt(2026, 8, 20, 10, 0), end=utc_dt(2026, 8, 20, 11, 0)
+    )
+    account = FakeWriteAccount(item)
+    update_event(account, make_config(), "AAA:CCC", start="2026-08-20T15:00")
+    assert (item.end - item.start).total_seconds() == 3600
+    assert item.start.astimezone(ZoneInfo("Europe/Moscow")).hour == 15
+
+
+def test_update_event_end_only_changes_duration():
+    item = make_writable_event(
+        start=utc_dt(2026, 8, 20, 10, 0), end=utc_dt(2026, 8, 20, 11, 0)
+    )
+    original_start = item.start
+    account = FakeWriteAccount(item)
+    update_event(account, make_config(), "AAA:CCC", end="2026-08-20T17:00")
+    assert item.start == original_start
+    assert item.end.astimezone(ZoneInfo("Europe/Moscow")).hour == 17
+
+
+def test_update_event_end_only_before_start_raises():
+    item = make_writable_event(
+        start=utc_dt(2026, 8, 20, 12, 0), end=utc_dt(2026, 8, 20, 13, 0)
+    )
+    account = FakeWriteAccount(item)
+    with pytest.raises(InvalidArgumentError):
+        # 09:00 MSK = 06:00 UTC, раньше существующего start (12:00 UTC)
+        update_event(account, make_config(), "AAA:CCC", end="2026-08-20T09:00")
+
+
+def test_update_event_both_bounds_taken_as_given():
+    item = make_writable_event()
+    account = FakeWriteAccount(item)
+    update_event(
+        account,
+        make_config(),
+        "AAA:CCC",
+        start="2026-08-20T15:00",
+        end="2026-08-20T18:00",
+    )
+    assert (item.end - item.start).total_seconds() == 3 * 3600
+
+
+def test_update_event_none_fields_are_untouched():
+    item = make_writable_event(subject="Original")
+    item.location = "Room 1"
+    account = FakeWriteAccount(item)
+    update_event(account, make_config(), "AAA:CCC", subject="Renamed")
+    assert item.subject == "Renamed"
+    assert item.location == "Room 1"
+
+
+def test_update_event_rejects_empty_subject():
+    account = FakeWriteAccount(make_writable_event())
+    with pytest.raises(InvalidArgumentError):
+        update_event(account, make_config(), "AAA:CCC", subject="  ")
+
+
+def test_update_event_sends_invitations_by_default():
+    item = make_writable_event()
+    account = FakeWriteAccount(item)
+    result = update_event(account, make_config(), "AAA:CCC", subject="Moved")
+    assert item.saved_with["send_meeting_invitations"] == "SendToAllAndSaveCopy"
+    assert result["invitations_sent"] is True
+
+
+def test_update_event_send_invitations_false():
+    item = make_writable_event()
+    account = FakeWriteAccount(item)
+    result = update_event(
+        account, make_config(), "AAA:CCC", subject="Quiet", send_invitations=False
+    )
+    assert item.saved_with["send_meeting_invitations"] == "SendToNone"
+    assert result["invitations_sent"] is False
+
+
+def test_update_event_without_attendees_never_sends():
+    item = make_writable_event(attendees=[])
+    account = FakeWriteAccount(item)
+    result = update_event(account, make_config(), "AAA:CCC", subject="Solo")
+    assert item.saved_with["send_meeting_invitations"] == "SendToNone"
+    assert result["invitations_sent"] is False
+
+
+def test_update_event_occurrence_is_allowed():
+    item = make_writable_event(item_type="Occurrence")
+    account = FakeWriteAccount(item)
+    update_event(account, make_config(), "AAA:CCC", subject="This one only")
+    assert item.saved_with is not None
+
+
+def test_update_event_recurring_master_rejected():
+    item = make_writable_event(item_type="RecurringMaster")
+    account = FakeWriteAccount(item)
+    with pytest.raises(InvalidArgumentError) as excinfo:
+        update_event(account, make_config(), "AAA:CCC", subject="Whole series")
+    assert "series" in str(excinfo.value).lower()
+    assert item.saved_with is None
+
+
+def test_update_event_scope_series_rejected():
+    item = make_writable_event()
+    account = FakeWriteAccount(item)
+    with pytest.raises(InvalidArgumentError):
+        update_event(account, make_config(), "AAA:CCC", subject="x", scope="series")
+    assert item.saved_with is None
+
+
+def test_update_event_non_organizer_rejected():
+    item = make_writable_event(organizer_email="boss@example.com")
+    account = FakeWriteAccount(item)
+    with pytest.raises(PermissionDeniedError):
+        update_event(account, make_config(), "AAA:CCC", subject="Not mine")
+    assert item.saved_with is None
+
+
+def test_update_event_organizer_match_is_case_insensitive():
+    item = make_writable_event(organizer_email="Me@Example.COM")
+    account = FakeWriteAccount(item)
+    update_event(account, make_config(email="me@example.com"), "AAA:CCC", subject="Mine")
+    assert item.saved_with is not None
+
+
+def test_update_event_missing_item_raises_not_found():
+    account = FakeWriteAccount(None)
+    with pytest.raises(ItemNotFoundError):
+        update_event(account, make_config(), "ZZZ:QQQ", subject="Ghost")
+
+
+def test_update_event_resolves_stale_changekey_via_calendar_scan():
+    item = make_writable_event(item_id="AAA", changekey="FRESH")
+    # fetch() ничего не отдаёт (ChangeKey устарел) — item находится сканом
+    account = FakeWriteAccount(None, calendar_items=[item])
+    update_event(account, make_config(), "AAA:STALE", subject="Recovered")
+    assert item.subject == "Recovered"
+    assert item.saved_with is not None
+
+
+def test_update_event_ews_permission_error_translated():
+    from exchangelib.errors import ErrorCalendarIsNotOrganizer
+
+    item = make_writable_event(save_error=ErrorCalendarIsNotOrganizer("nope"))
+    account = FakeWriteAccount(item)
+    with pytest.raises(PermissionDeniedError):
+        update_event(account, make_config(), "AAA:CCC", subject="x")
+
+
+def test_update_event_event_id_reread_after_save():
+    item = make_writable_event(item_id="OLD", changekey="OLDCK")
+    account = FakeWriteAccount(item)
+
+    def bump_id(**_kwargs):
+        item.id, item.changekey = "NEWID", "NEWCK"
+
+    item.save = lambda **kwargs: bump_id(**kwargs)
+    result = update_event(account, make_config(), "OLD:OLDCK", subject="Moved")
+    # После обновления occurrence EWS может вернуть новый id — ответ должен
+    # нести актуальный, иначе клиент потом не найдёт встречу.
+    assert result["event_id"] == "NEWID:NEWCK"

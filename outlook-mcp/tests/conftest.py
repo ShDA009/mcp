@@ -176,13 +176,28 @@ def make_writable_event(
     )
 
 
-class FakeWriteAccount:
-    """Account stub for write paths: fetch() returns a prepared item."""
+class _FakeWriteCalendar:
+    """Calendar stub backing the stale-ChangeKey fallback scan."""
 
-    def __init__(self, item=None, fetch_error=None):
+    def __init__(self, items):
+        self._items = items
+
+    def filter(self, **_kwargs):
+        return list(self._items)
+
+
+class FakeWriteAccount:
+    """Account stub for write paths: fetch() returns a prepared item.
+
+    When fetch() comes up empty the production code falls back to scanning the
+    calendar (a ChangeKey may be stale), so the stub has to offer a calendar
+    too - an empty one means "really not found".
+    """
+
+    def __init__(self, item=None, fetch_error=None, calendar_items=None):
         self._item = item
         self._fetch_error = fetch_error
-        self.calendar = None
+        self.calendar = _FakeWriteCalendar(calendar_items or [])
 
     def fetch(self, ids):
         if self._fetch_error is not None:
