@@ -21,11 +21,21 @@ from outlook_mcp.errors import (
 from .conftest import (
     FakeAttendee,
     FakeMailbox,
+    FakeUpdateItem,
     FakeWriteAccount,
     RecordingCalendarItem,
     make_writable_event,
     utc_dt,
 )
+
+
+@pytest.fixture(autouse=True)
+def fake_update_service():
+    """update_event ходит в EWS UpdateItem напрямую: Item.save() зашивает
+    MessageDisposition="SaveOnly", при котором копия не попадает в
+    «Отправленные». Подменяем сервис фейком с тем же контрактом."""
+    with patch("outlook_mcp.calendar_write.UpdateItem", FakeUpdateItem):
+        yield
 
 
 def make_config(timezone="Europe/Moscow", email="me@example.com"):
@@ -335,8 +345,10 @@ def test_update_event_sends_invitations_by_default():
     item = make_writable_event()
     account = FakeWriteAccount(item)
     result = update_event(account, make_config(), "AAA:CCC", subject="Moved")
-    # Как в Outlook: уведомляются только затронутые изменением, а не все подряд
-    assert item.saved_with["send_meeting_invitations"] == "SendToChangedAndSaveCopy"
+    # SendToAll + SendAndSaveCopy — единственная связка, при которой копия
+    # попадает в «Отправленные» (проверено на живом ящике, см. _save_update)
+    assert item.saved_with["send_meeting_invitations"] == "SendToAllAndSaveCopy"
+    assert item.saved_with["message_disposition"] == "SendAndSaveCopy"
     assert result["invitations_sent"] is True
 
 
@@ -356,7 +368,7 @@ def test_update_event_empty_attendees_clears_the_list():
     assert not item.required_attendees
     # Удалённый участник обязан получить отмену, хотя после правки список пуст
     assert result["invitations_sent"] is True
-    assert item.saved_with["send_meeting_invitations"] == "SendToChangedAndSaveCopy"
+    assert item.saved_with["send_meeting_invitations"] == "SendToAllAndSaveCopy"
 
 
 def test_update_event_replaces_optional_attendees():
@@ -607,12 +619,26 @@ def test_update_event_ews_permission_error_translated():
 def test_update_event_event_id_reread_after_save():
     item = make_writable_event(item_id="OLD", changekey="OLDCK")
     account = FakeWriteAccount(item)
-
-    def bump_id(**_kwargs):
-        item.id, item.changekey = "NEWID", "NEWCK"
-
-    item.save = lambda **kwargs: bump_id(**kwargs)
     result = update_event(account, make_config(), "OLD:OLDCK", subject="Moved")
-    # После обновления occurrence EWS может вернуть новый id — ответ должен
-    # нести актуальный, иначе клиент потом не найдёт встречу.
-    assert result["event_id"] == "NEWID:NEWCK"
+    # Exchange перевыдаёт id при каждой правке (для экземпляра серии — всегда).
+    # exchangelib не записывает его обратно при прямом вызове UpdateItem,
+    # поэтому это делает _save_update — иначе клиент получит мёртвый event_id.
+    assert result["event_id"] == "UPDATED-ID:UPDATED-CK"
+
+
+def test_update_event_files_copy_in_sent_items():
+    # Item.save() зашивает MessageDisposition="SaveOnly": уведомления уходят,
+    # но копия в «Отправленные» не попадает — в отличие от правки в Outlook.
+    item = make_writable_event()
+    account = FakeWriteAccount(item)
+    update_event(account, make_config(), "AAA:CCC", subject="Moved")
+    assert item.saved_with["message_disposition"] == "SendAndSaveCopy"
+
+
+def test_update_event_without_recipients_neither_sends_nor_files():
+    item = make_writable_event(attendees=[])
+    account = FakeWriteAccount(item)
+    result = update_event(account, make_config(), "AAA:CCC", subject="Solo")
+    assert result["invitations_sent"] is False
+    assert item.saved_with["message_disposition"] == "SaveOnly"
+    assert item.saved_with["send_meeting_invitations"] == "SendToNone"

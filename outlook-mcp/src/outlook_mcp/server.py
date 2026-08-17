@@ -389,11 +389,12 @@ if _config.allow_write:
         from list_events - this updates that occurrence only. The id of the
         series itself is rejected; editing a whole series is not supported.
 
-        send_invitations - when true (default) the people affected by the change
-        are notified, the same way Outlook does it: someone removed from the
-        meeting gets a cancellation, and attendees who are still on it get the
-        update. This matters most for a move: a rescheduled meeting nobody was
-        told about breaks other people's day.
+        send_invitations - when true (default) every attendee is notified of the
+        change and a copy of the mail is filed in Sent Items, the same as
+        editing the meeting in Outlook. This matters most for a move: a
+        rescheduled meeting nobody was told about breaks other people's day.
+        Note that everyone on the meeting hears about any edit, not only the
+        people it affects.
 
         An event_id goes stale as soon as the event is modified - by you or by
         anybody else. On "item_not_found", call list_events again and retry with

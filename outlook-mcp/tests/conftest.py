@@ -105,12 +105,25 @@ class RecordingCalendarItem(FakeCalendarItem):
     assert on the recorded kwargs, not just on the outcome.
     """
 
-    def __init__(self, *args, save_error=None, delete_error=None, **kwargs):
+    # exchangelib rebuilds item._id from the UpdateItem response; the real
+    # class uses ItemId, a two-field (id, changekey) element.
+    ID_ELEMENT_CLS = staticmethod(lambda item_id, changekey: (item_id, changekey))
+
+    def __init__(self, *args, save_error=None, delete_error=None, account=None, **kwargs):
         self.saved_with = None
         self.deleted_with = None
         self.save_error = save_error
         self.delete_error = delete_error
+        self.account = account
         super().__init__(*args, **kwargs)
+
+    @property
+    def _id(self):
+        return (self.id, self.changekey)
+
+    @_id.setter
+    def _id(self, value):
+        self.id, self.changekey = value
 
     def save(
         self,
@@ -139,6 +152,40 @@ class RecordingCalendarItem(FakeCalendarItem):
         if self.delete_error is not None:
             raise self.delete_error
         self.deleted_with = {"send_meeting_cancellations": send_meeting_cancellations}
+
+
+class FakeUpdateItem:
+    """Stand-in for exchangelib's UpdateItem service.
+
+    Mirrors the real contract: call() takes (item, fieldnames) pairs and the
+    same kwarg names, and returns (id, changekey) tuples - Exchange reissues
+    the id on every edit. Tests patch calendar_write.UpdateItem with this and
+    assert on what was recorded onto the item.
+    """
+
+    def __init__(self, account=None):
+        self.account = account
+
+    def call(
+        self,
+        items,
+        message_disposition,
+        conflict_resolution,
+        send_meeting_invitations_or_cancellations,
+        suppress_read_receipts=True,
+    ):
+        results = []
+        for item, fieldnames in items:
+            if getattr(item, "save_error", None) is not None:
+                raise item.save_error
+            item.saved_with = {
+                "update_fields": list(fieldnames),
+                "message_disposition": message_disposition,
+                "conflict_resolution": conflict_resolution,
+                "send_meeting_invitations": send_meeting_invitations_or_cancellations,
+            }
+            results.append(("UPDATED-ID", "UPDATED-CK"))
+        return results
 
 
 def make_writable_event(

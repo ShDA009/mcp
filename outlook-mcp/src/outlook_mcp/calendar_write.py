@@ -10,10 +10,13 @@ from exchangelib.errors import (
     ErrorCannotDeleteObject,
 )
 from exchangelib.items import (
+    AUTO_RESOLVE,
+    SAVE_ONLY,
+    SEND_AND_SAVE_COPY,
     SEND_TO_ALL_AND_SAVE_COPY,
-    SEND_TO_CHANGED_AND_SAVE_COPY,
     SEND_TO_NONE,
 )
+from exchangelib.services import UpdateItem
 
 from .calendar_service import load_event
 from .config import Config
@@ -192,6 +195,53 @@ def _translate_write_error(exc: Exception) -> Exception:
     return translate_ews_error(exc)
 
 
+def _save_update(item, changed: list[str], will_send: bool) -> None:
+    """Save an edited calendar item, filing a copy in Sent Items.
+
+    Item.save() cannot do this: it hardcodes MessageDisposition="SaveOnly", so
+    notifications go out but nothing is filed - an edit made through the tool
+    left no trace in Sent Items, unlike the same edit made in Outlook. Hence
+    the direct UpdateItem call.
+
+    Both parameters are needed together. Verified against a live mailbox by
+    editing one meeting three times, changing one parameter at a time:
+
+      SaveOnly        + SendToChangedAndSaveCopy -> no copy
+      SendAndSaveCopy + SendToChangedAndSaveCopy -> no copy
+      SendAndSaveCopy + SendToAllAndSaveCopy     -> copy filed
+
+    SendToAll is therefore the price of having a copy at all: every attendee
+    hears about an edit, not only the ones it affects. Outlook itself notifies
+    only the affected people, but it does so by composing and sending the mails
+    itself rather than asking EWS to do it - which is why it gets both.
+
+    'changed' lists only the fields actually touched. Without it exchangelib
+    also sends 'uid', which Exchange rejects on an occurrence of a recurring
+    series ("Single calendar item or recurring master is expected",
+    field calendar:UID), failing every edit of a recurring meeting.
+    """
+    results = list(
+        UpdateItem(account=item.account).call(
+            items=[(item, changed)],
+            message_disposition=SEND_AND_SAVE_COPY if will_send else SAVE_ONLY,
+            conflict_resolution=AUTO_RESOLVE,
+            send_meeting_invitations_or_cancellations=(
+                SEND_TO_ALL_AND_SAVE_COPY if will_send else SEND_TO_NONE
+            ),
+            suppress_read_receipts=True,
+        )
+    )
+
+    for result in results:
+        if isinstance(result, Exception):
+            raise result
+        # Exchange reissues the id on every edit (always so for an occurrence).
+        # exchangelib only writes it back when going through save(), so do it
+        # here - otherwise the caller gets an event_id that no longer resolves.
+        if isinstance(result, tuple) and len(result) == 2:
+            item._id = item.ID_ELEMENT_CLS(*result)
+
+
 def _has_attendees(item) -> bool:
     return bool(
         getattr(item, "required_attendees", None)
@@ -278,25 +328,12 @@ def update_event(
     will_send = bool(send_invitations and (had_attendees or _has_attendees(item)))
 
     try:
-        item.save(
-            # Only the fields we actually touched. Without this exchangelib also
-            # sends 'uid', which Exchange refuses to accept on an occurrence of a
-            # recurring series ("Single calendar item or recurring master is
-            # expected", field calendar:UID) - making every edit of a moved
-            # recurring meeting fail.
-            update_fields=changed,
-            # Outlook notifies only the people an edit actually affects, and the
-            # tool should not be noisier than the UI it stands in for: everyone
-            # else would get a pointless mail on every reschedule.
-            send_meeting_invitations=(
-                SEND_TO_CHANGED_AND_SAVE_COPY if will_send else SEND_TO_NONE
-            ),
-        )
+        _save_update(item, changed, will_send)
     except Exception as exc:
         raise _translate_write_error(exc) from exc
 
     # Updating an occurrence makes EWS issue a new item id, so the response is
-    # built from the item after save() - never from the event_id we were given.
+    # built from the item after the update - never from the event_id we got.
     result = format_event_details(item, config.timezone)
     result["invitations_sent"] = will_send
     return result
