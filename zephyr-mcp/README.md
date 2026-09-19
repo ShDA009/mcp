@@ -63,14 +63,14 @@ ZEPHYR_API_TOKEN=your_token_here
 
 | Тул | Параметры | Описание |
 |---|---|---|
-| `list_executions` | `test_run_key` | Список test executions (items) внутри test run/cycle, например `CLOUDDEV-C667` |
+| `list_executions` | `test_run_key` | Список test executions (items) внутри test run/cycle, например `PROJ-C667` |
 | `get_execution` | `test_run_key`, `test_case_key=None` | Детальный результат execution(ов) со статусами по шагам; без `test_case_key` — все executions в run |
-| `get_test_case` | `test_case_key` | Test case по ключу, например `CLOUDDEV-T853` (шаги — в `testScript.steps`) |
-| `list_cycles` | `project_key`, `folder=None`, `max_results=50` | Поиск test runs (cycles) в проекте, например `CLOUDDEV`; с `folder` — только внутри папки и её подпапок (префикс пути, например `/Турбо`). С `folder` возвращает лёгкий список (`key`/`folder`/`name`), не полные объекты — используй `get_cycles_batch` для деталей |
-| `list_test_cases` | `project_key`, `folder=None`, `max_results=50` | Поиск test cases в проекте; с `folder` — только внутри папки и её подпапок (префикс пути, например `/Турбо` или `/Турбо/Портал`). С `folder` возвращает лёгкий список, не полные объекты — используй `get_test_cases_batch` для деталей |
+| `get_test_case` | `test_case_key` | Test case по ключу, например `PROJ-T853` (шаги — в `testScript.steps`) |
+| `list_cycles` | `project_key`, `folder=None`, `max_results=50` | Поиск test runs (cycles) в проекте, например `PROJ`; с `folder` — только внутри папки и её подпапок (префикс пути, например `/Папка`). С `folder` возвращает лёгкий список (`key`/`folder`/`name`), не полные объекты — используй `get_cycles_batch` для деталей |
+| `list_test_cases` | `project_key`, `folder=None`, `max_results=50` | Поиск test cases в проекте; с `folder` — только внутри папки и её подпапок (префикс пути, например `/Папка` или `/Папка/Подпапка`). С `folder` возвращает лёгкий список, не полные объекты — используй `get_test_cases_batch` для деталей |
 | `get_test_cases_batch` | `project_key`, `test_case_keys` | Полные test case объекты (с шагами) по списку ключей |
 | `get_cycles_batch` | `project_key`, `test_run_keys` | Полные test run объекты (с executions) по списку ключей |
-| `get_project` | `project_id_or_key` | Jira-проект по числовому id или ключу — резолвит id из URL (например `16816`) в `project_key` (например `CLOUDDEV`) |
+| `get_project` | `project_id_or_key` | Jira-проект по числовому id или ключу — резолвит id из URL (например `16816`) в `project_key` (например `PROJ`) |
 | `list_projects` | — | Список всех доступных токену Jira-проектов (id, key, name) |
 
 ---

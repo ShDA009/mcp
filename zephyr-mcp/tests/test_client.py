@@ -12,17 +12,17 @@ from zephyr_mcp.client import (
 
 
 def test_filter_by_folder_prefix_none_returns_all():
-    items = [{"folder": "/Турбо/Портал"}, {"folder": "/1. Пользователь"}]
+    items = [{"folder": "/Папка/Подпапка"}, {"folder": "/1. Пользователь"}]
     assert _filter_by_folder_prefix(items, None) == items
 
 
 def test_filter_by_folder_prefix_matches_subfolders():
     items = [
-        {"folder": "/Турбо/Портал/Ядро/Аутентификация"},
-        {"folder": "/Турбо/Сайт/Метрики"},
+        {"folder": "/Папка/Подпапка/Ядро/Аутентификация"},
+        {"folder": "/Папка/Раздел/Метрики"},
         {"folder": "/1. Пользователь/Авторизация"},
     ]
-    result = _filter_by_folder_prefix(items, "/Турбо")
+    result = _filter_by_folder_prefix(items, "/Папка")
     assert result == items[:2]
 
 
@@ -33,20 +33,20 @@ def test_filter_by_folder_prefix_matches_exact_leaf():
 
 
 def test_filter_by_folder_prefix_does_not_match_sibling_with_shared_prefix():
-    items = [{"folder": "/Турбо/Портал"}, {"folder": "/ТурбоЛайт/Что-то"}]
-    result = _filter_by_folder_prefix(items, "/Турбо")
+    items = [{"folder": "/Папка/Подпапка"}, {"folder": "/ПапкаЛайт/Что-то"}]
+    result = _filter_by_folder_prefix(items, "/Папка")
     assert result == items[:1]
 
 
 def test_filter_by_folder_prefix_ignores_items_without_folder():
-    items = [{"folder": "/Турбо/Портал"}, {"testCaseKey": "X-1"}]
-    result = _filter_by_folder_prefix(items, "/Турбо")
+    items = [{"folder": "/Папка/Подпапка"}, {"testCaseKey": "X-1"}]
+    result = _filter_by_folder_prefix(items, "/Папка")
     assert result == items[:1]
 
 
 def test_filter_by_folder_prefix_strips_trailing_slash():
-    items = [{"folder": "/Турбо/Портал"}]
-    result = _filter_by_folder_prefix(items, "/Турбо/")
+    items = [{"folder": "/Папка/Подпапка"}]
+    result = _filter_by_folder_prefix(items, "/Папка/")
     assert result == items
 
 
@@ -81,8 +81,8 @@ def test_handle_response_generic_5xx_includes_status_and_body_snippet():
 
 
 def test_handle_response_200_returns_parsed_json():
-    result = _handle_response(_response(200, json={"key": "CLOUDDEV-T853"}), "/testcase/CLOUDDEV-T853")
-    assert result == {"key": "CLOUDDEV-T853"}
+    result = _handle_response(_response(200, json={"key": "PROJ-T853"}), "/testcase/PROJ-T853")
+    assert result == {"key": "PROJ-T853"}
 
 
 def test_handle_response_200_invalid_json_raises_readable_error():
