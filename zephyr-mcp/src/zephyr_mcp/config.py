@@ -30,10 +30,15 @@ def _read_env_file(path: Path) -> dict:
     return values
 
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
 @dataclass
 class Config:
     base_url: str
     api_token: str = field(repr=False)
+    allow_write: bool = False
+    allow_delete: bool = False
 
 
 def load_config() -> Config:
@@ -45,7 +50,22 @@ def load_config() -> Config:
             raise SystemExit(f"missing required env var {name}")
         values[name] = value
 
+    # Пишущие tools по умолчанию выключены: Zephyr общий для команды, и
+    # обновление сервера не должно молча давать агенту право создавать кейсы.
+    raw_allow_write = (
+        os.environ.get("ZEPHYR_ALLOW_WRITE")
+        or file_values.get("ZEPHYR_ALLOW_WRITE", "")
+    ).strip().lower()
+    # Удаление необратимо, поэтому ALLOW_WRITE его не включает — нужен отдельный
+    # флаг (и он действует только вместе с ALLOW_WRITE).
+    raw_allow_delete = (
+        os.environ.get("ZEPHYR_ALLOW_DELETE")
+        or file_values.get("ZEPHYR_ALLOW_DELETE", "")
+    ).strip().lower()
+
     return Config(
         base_url=values["ZEPHYR_BASE_URL"].rstrip("/"),
         api_token=values["ZEPHYR_API_TOKEN"],
+        allow_write=raw_allow_write in _TRUTHY,
+        allow_delete=raw_allow_delete in _TRUTHY,
     )

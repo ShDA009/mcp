@@ -16,7 +16,9 @@ def main() -> None:
         print(
             "zephyr-mcp — MCP server for Zephyr Scale / ATM (stdio transport).\n"
             "Run without arguments to start the MCP stdio server.\n"
-            "Required env: ZEPHYR_BASE_URL, ZEPHYR_API_TOKEN."
+            "Required env: ZEPHYR_BASE_URL, ZEPHYR_API_TOKEN.\n"
+            "Optional: ZEPHYR_ALLOW_WRITE=1 enables the write tools;\n"
+            "ZEPHYR_ALLOW_DELETE=1 (together with ALLOW_WRITE) enables delete_test_runs."
         )
         return
 
@@ -24,7 +26,7 @@ def main() -> None:
     client = ZephyrClient(cfg)
 
     mcp = FastMCP("zephyr-squad")
-    register_tools(mcp, client)
+    register_tools(mcp, client, cfg)
 
     mcp.run()
 
