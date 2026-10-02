@@ -1,8 +1,8 @@
 name: Check upstream MCP versions
 
 # Раз в неделю сравнивает актуальные версии mcp-atlassian (PyPI), postgres-mcp
-# (PyPI) и @zereight/mcp-gitlab (npm) с диапазонами, зафиксированными в
-# mcp-versions.txt.
+# (PyPI), mcp-grafana (PyPI) и @zereight/mcp-gitlab (npm) с диапазонами,
+# зафиксированными в mcp-versions.txt.
 # Патчи внутри диапазона не требуют внимания — они подтягиваются лаунчерами
 # автоматически при каждом запуске сервера (см. mcp-atlassian/install/ и
 # gitlab-mcp/install/). Этот workflow предупреждает только о новой минорной
@@ -92,6 +92,23 @@ jobs:
                       f"на PyPI доступна {latest} (ветка >= верхней границы "
                       f"{upper_major}.{upper_minor}). "
                       f"https://github.com/crystaldba/postgres-mcp/releases"
+                  )
+
+          # --- grafana-mcp: PyPI -------------------------------------------------
+          # Диапазон задан так же минорными границами (">=2.0,<2.1").
+          grafana_spec = versions.get("GRAFANA_SPEC", "")
+          m = re.search(r">=(\d+)\.(\d+),<(\d+)\.(\d+)", grafana_spec)
+          if m:
+              upper_major, upper_minor = int(m.group(3)), int(m.group(4))
+              data = json.loads(get("https://pypi.org/pypi/mcp-grafana/json"))
+              latest = data["info"]["version"]
+              latest_v = semver(latest)
+              if latest_v and minor_branch(*latest_v[:2]) >= minor_branch(upper_major, upper_minor):
+                  findings.append(
+                      f"**grafana-mcp**: диапазон `{grafana_spec}` устарел — "
+                      f"на PyPI доступна {latest} (ветка >= верхней границы "
+                      f"{upper_major}.{upper_minor}). "
+                      f"https://github.com/grafana/mcp-grafana/releases"
                   )
 
           # --- gitlab-mcp: npm ---------------------------------------------------

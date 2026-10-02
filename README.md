@@ -13,6 +13,7 @@
 | [mcp-atlassian](mcp-atlassian/) | Jira + Confluence, REST + PAT | нет (сторонний) | `uvx` из PyPI |
 | [gitlab-mcp](gitlab-mcp/) | GitLab, REST + PAT | нет (сторонний, Node) | `npx` из npm |
 | [postgres-mcp](postgres-mcp/) | PostgreSQL: health, explain, индексы | нет (сторонний) | `uvx` из PyPI |
+| [grafana-mcp](grafana-mcp/) | Grafana: дашборды, datasources, запросы, алерты | нет (сторонний) | `uvx` из PyPI |
 
 ## Установка (рекомендуется): установочный скрипт, без Docker
 
@@ -24,6 +25,7 @@ zephyr-mcp/install/setup.sh
 mcp-atlassian/install/setup.sh
 gitlab-mcp/install/setup.sh
 postgres-mcp/install/setup.sh
+grafana-mcp/install/setup.sh
 ```
 
 Подробная инструкция — в `install/README.md` каждого сервера:
@@ -31,7 +33,8 @@ postgres-mcp/install/setup.sh
 [zephyr-mcp](zephyr-mcp/install/README.md) ·
 [mcp-atlassian](mcp-atlassian/install/README.md) ·
 [gitlab-mcp](gitlab-mcp/install/README.md) ·
-[postgres-mcp](postgres-mcp/install/README.md).
+[postgres-mcp](postgres-mcp/install/README.md) ·
+[grafana-mcp](grafana-mcp/install/README.md).
 
 Скрипт сам:
 1. находит/ставит `uv` (для `gitlab-mcp` дополнительно нужен предустановленный
@@ -44,7 +47,7 @@ postgres-mcp/install/setup.sh
 Повторный запуск безопасен — секция в конфиге Cline обновляется на месте, не
 дублируется.
 
-### Почему у сторонних серверов (`mcp-atlassian`, `gitlab-mcp`, `postgres-mcp`) есть лаунчер
+### Почему у сторонних серверов (`mcp-atlassian`, `gitlab-mcp`, `postgres-mcp`, `grafana-mcp`) есть лаунчер
 
 Для своих серверов (`outlook-mcp`, `zephyr-mcp`) конфиг Cline вызывает `uvx`
 напрямую — версия кода не фиксируется, `uvx` всегда берёт актуальный `master`
@@ -57,6 +60,7 @@ postgres-mcp/install/setup.sh
 ATLASSIAN_SPEC="mcp-atlassian>=0.23,<0.24"
 GITLAB_SPEC="@zereight/mcp-gitlab@^2.1"
 POSTGRES_SPEC="postgres-mcp>=0.3,<0.4"
+GRAFANA_SPEC="mcp-grafana>=2.0,<2.1"
 ```
 
 Установщик генерирует **лаунчер** (`~/.config/<сервер>/launch.sh`, на Windows
@@ -142,7 +146,12 @@ Cline/OpenCode — `docker run ... --env-file /абсолютный/путь/.en
 │   ├── install/            ← setup.sh / setup.ps1 (npx + лаунчер)
 │   ├── .env.example
 │   └── .gitignore
-└── postgres-mcp/           ← PostgreSQL (сторонний код)
+├── postgres-mcp/           ← PostgreSQL (сторонний код)
+│   ├── README.md
+│   ├── install/             ← setup.sh / setup.ps1 (uvx + лаунчер)
+│   ├── .env.example
+│   └── .gitignore
+└── grafana-mcp/            ← Grafana (сторонний код)
     ├── README.md
     ├── install/             ← setup.sh / setup.ps1 (uvx + лаунчер)
     ├── .env.example

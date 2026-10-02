@@ -14,6 +14,7 @@
 ATLASSIAN_SPEC="mcp-atlassian>=0.23,<0.24"
 GITLAB_SPEC="@zereight/mcp-gitlab@^2.1"
 POSTGRES_SPEC="postgres-mcp>=0.3,<0.4"
+GRAFANA_SPEC="mcp-grafana>=2.0,<2.1"
 
 # --- Наши серверы (venv, ставятся из этого репозитория) ---------------------
 # Git-ref (ветка, тег или коммит), который лаунчер ставит в локальный venv.

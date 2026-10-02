@@ -6,6 +6,13 @@
 
 Подробности по своим серверам: [outlook-mcp](outlook-mcp/CHANGELOG.md).
 
+## 2026-10-02 — grafana-mcp
+
+- Добавлен сервер Grafana (сторонний, `uvx` из PyPI, `mcp-grafana` 2.0):
+  дашборды, datasources, запросы к данным, алерты. Установочные скрипты
+  `setup.sh` / `setup.ps1`, запуск с `--tls-skip-verify`, версия пинится в
+  `mcp-versions.txt` (`GRAFANA_SPEC`).
+
 ## 2026-09-28 — zephyr-mcp 0.4.1
 
 **Добавлено**
