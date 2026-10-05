@@ -50,6 +50,32 @@ ZEPHYR_API_TOKEN=your_token_here
   `ZEPHYR_ALLOW_WRITE`. Удаление необратимо, поэтому право на запись его не
   включает. Tool помечен `destructiveHint`, клиенты с поддержкой этой
   аннотации спрашивают подтверждение перед вызовом.
+- `ZEPHYR_CA_BUNDLE` — необязательная. Путь к PEM с корпоративным CA, если
+  Jira за внутренним УЦ. Проверка сертификата остаётся включённой; отключения
+  нет намеренно (токен идёт в заголовке).
+
+### Корпоративный CA
+
+`could not connect to Zephyr` может означать и ошибку TLS. Проверка:
+`curl https://tasks.example.com/rest/api/2/serverInfo` → `(60) unable to get
+local issuer certificate`. Тогда соберите цепочку CA (не leaf-сертификат сайта):
+
+```bash
+install/fetch-ca.sh https://tasks.example.com                 # macOS/Linux
+```
+```powershell
+powershell -ExecutionPolicy Bypass -File install\fetch-ca.ps1 -Url https://tasks.example.com   # Windows
+```
+
+Скрипт сохранит `ca.pem` (`~/.config/zephyr-mcp/` или `%USERPROFILE%\.zephyr-mcp\`),
+проверит TLS и сам пропишет `ZEPHYR_CA_BUNDLE=<путь>` в существующий
+файл `.env` (остальные строки не меняются; если файла нет — выведет строку
+для ручного добавления).
+
+Вручную: в браузере замок → сертификат → вкладка «Состав» → выбрать
+промежуточный и корневой CA (не сертификат сайта) → «Экспорт» в Base-64 X.509
+(PEM) → склеить в один файл. В Docker файл монтируется
+(`-v /path/ca.pem:/ca.pem:ro`), `ZEPHYR_CA_BUNDLE=/ca.pem`.
 
 Фрагмент `cline_mcp_settings.json` для Docker-варианта:
 

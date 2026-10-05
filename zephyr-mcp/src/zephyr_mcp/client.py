@@ -34,6 +34,7 @@ class ZephyrClient:
             },
             timeout=15.0,
             follow_redirects=False,
+            verify=cfg.ca_bundle or True,
         )
 
     def list_executions(self, test_run_key: str) -> Any:

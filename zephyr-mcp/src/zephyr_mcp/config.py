@@ -39,6 +39,7 @@ class Config:
     api_token: str = field(repr=False)
     allow_write: bool = False
     allow_delete: bool = False
+    ca_bundle: str = ""
 
 
 def load_config() -> Config:
@@ -63,9 +64,20 @@ def load_config() -> Config:
         or file_values.get("ZEPHYR_ALLOW_DELETE", "")
     ).strip().lower()
 
+    # Путь к PEM с корпоративным CA: Zephyr за внутренним УЦ, которого нет в
+    # certifi. Проверку сертификата целиком не отключаем.
+    ca_bundle = (
+        os.environ.get("ZEPHYR_CA_BUNDLE") or file_values.get("ZEPHYR_CA_BUNDLE", "")
+    ).strip()
+    if ca_bundle:
+        ca_bundle = str(Path(ca_bundle).expanduser())
+        if not Path(ca_bundle).is_file():
+            raise SystemExit(f"ZEPHYR_CA_BUNDLE: file not found: {ca_bundle}")
+
     return Config(
         base_url=values["ZEPHYR_BASE_URL"].rstrip("/"),
         api_token=values["ZEPHYR_API_TOKEN"],
         allow_write=raw_allow_write in _TRUTHY,
         allow_delete=raw_allow_delete in _TRUTHY,
+        ca_bundle=ca_bundle,
     )
