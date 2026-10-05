@@ -49,9 +49,9 @@ grafana-mcp/install/setup.sh
 
 ### Почему у сторонних серверов (`mcp-atlassian`, `gitlab-mcp`, `postgres-mcp`, `grafana-mcp`) есть лаунчер
 
-Для своих серверов (`outlook-mcp`, `zephyr-mcp`) конфиг Cline вызывает `uvx`
-напрямую — версия кода не фиксируется, `uvx` всегда берёт актуальный `master`
-из git.
+`zephyr-mcp` и `outlook-mcp` ставятся в локальный venv; лаунчер при старте сверяет
+SHA ветки `master` (`git ls-remote`) с установленным и переустанавливает пакет при
+расхождении. Релиз = пуш проверенного кода в `master`.
 
 Для сторонних серверов версия пакета зафиксирована как **минорная ветка** в
 [`mcp-versions.txt`](mcp-versions.txt) в корне репозитория:

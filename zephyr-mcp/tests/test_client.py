@@ -1,3 +1,5 @@
+import ssl
+
 import httpx
 import pytest
 
@@ -8,6 +10,7 @@ from zephyr_mcp.client import (
     _build_test_case_payload,
     _build_test_case_update_payload,
     _build_test_run_payload,
+    _build_verify,
     _chunk,
     _dedup_keys,
     _escape_jql,
@@ -16,6 +19,32 @@ from zephyr_mcp.client import (
     _retry_delay,
 )
 from zephyr_mcp.config import Config
+
+
+def test_build_verify_without_bundle_returns_true():
+    assert _build_verify("") is True
+
+
+_TEST_CA_PEM = """\
+-----BEGIN CERTIFICATE-----
+MIIBeTCCAR+gAwIBAgIUGEiq+Jsq0TPy2mwlzyxopTRJuFEwCgYIKoZIzj0EAwIw
+EjEQMA4GA1UEAwwHdGVzdC1jYTAeFw0yNjEwMDUwODE2NDZaFw0zNjEwMDIwODE2
+NDZaMBIxEDAOBgNVBAMMB3Rlc3QtY2EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNC
+AAQAYo5brUo4UyK4/ndHuvj0lMB3NXuY5ppshjwmSWNDLxSEMwfaqtYhszdNo61G
+A6VlZmLi6ixrEK2OJVjWuQCHo1MwUTAdBgNVHQ4EFgQUX58dkMffTJb7VqhzR4aZ
++6FEl3MwHwYDVR0jBBgwFoAUX58dkMffTJb7VqhzR4aZ+6FEl3MwDwYDVR0TAQH/
+BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiEA903sqcXMhm2xWLykeCBM5QC5ipof
+NuK+4wVV16b7THcCIGeLmi+zbJZaR0UpP+QDyokzfDo3laZaUCTWEmTjPCJh
+-----END CERTIFICATE-----
+"""
+
+
+def test_build_verify_with_bundle_drops_strict_flag(tmp_path):
+    ca = tmp_path / "ca.pem"
+    ca.write_text(_TEST_CA_PEM)
+    context = _build_verify(str(ca))
+    assert isinstance(context, ssl.SSLContext)
+    assert not context.verify_flags & ssl.VERIFY_X509_STRICT
 
 
 def test_filter_by_folder_prefix_none_returns_all():

@@ -7,8 +7,11 @@
 set -euo pipefail
 
 # --- Константы --------------------------------------------------------------
-GIT_URL="git+https://github.com/ShDA009/mcp.git#subdirectory=outlook-mcp"
+REPO_URL="https://github.com/ShDA009/mcp.git"
+SUBDIR="outlook-mcp"
 MCP_ENTRY="ews-mcp-server"
+PY_VERSION="3.11"   # pyproject.toml: requires-python = ">=3.11"
+BRANCH="master"     # в master попадает только проверенный код
 SERVER_KEY="outlook-mcp"
 UV_INSTALLER="https://astral.sh/uv/install.sh"
 
@@ -93,11 +96,6 @@ else
       ;;
   esac
 fi
-
-# uvx лежит рядом с uv
-UVX_BIN="$(dirname "$UV_BIN")/uvx"
-[ -x "$UVX_BIN" ] || die "Найден uv ($UV_BIN), но рядом нет uvx. Переустановите uv."
-ok "uvx: $UVX_BIN"
 
 # --- 2. Путь к конфигу Cline ------------------------------------------------
 # Cline хранит конфиг в двух разных местах в зависимости от версии:
@@ -221,6 +219,73 @@ chmod 600 "$ENV_FILE" 2>/dev/null || true
 umask 022
 ok "Креды сохранены в $ENV_FILE (chmod 600)."
 
+# uv берёт сертификаты из системного хранилища (корп-CA при TLS-инспекции).
+export UV_SYSTEM_CERTS=1 UV_NATIVE_TLS=1
+
+# --- 4b. Установить пакет в venv и сгенерировать лаунчер ---------------------
+# Лаунчер при каждом старте узнаёт SHA ветки master (git ls-remote) и сверяет
+# его с .installed-ref; пакет переустанавливается ТОЛЬКО при расхождении (так
+# сотрудники получают обновления). Нет сети — запускается установленная версия.
+# Обычный старт = запуск бинаря, без резолва зависимостей.
+command -v git >/dev/null 2>&1 || die "Не найден 'git' — он нужен, чтобы установить пакет из репозитория. Конфиг Cline не изменён."
+
+VENV_DIR="$CONF_DIR/venv"
+REF_FILE="$CONF_DIR/.installed-ref"
+LAUNCHER="$CONF_DIR/launch.sh"
+SERVER_BIN="$VENV_DIR/bin/$MCP_ENTRY"
+
+# SHA ветки: ставим ровно его, чтобы .installed-ref соответствовал содержимому.
+TARGET_REF="$(GIT_TERMINAL_PROMPT=0 git ls-remote "$REPO_URL" "refs/heads/$BRANCH" 2>/dev/null | awk '{print $1; exit}')"
+if ! printf '%s' "$TARGET_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+  warn "Не удалось получить SHA ветки $BRANCH, ставлю по имени ветки."
+  TARGET_REF="$BRANCH"
+fi
+
+info "Устанавливаю пакет в $VENV_DIR (ref: $TARGET_REF)..."
+info "Первая установка занимает 1-3 минуты (скачивание Python и зависимостей)."
+"$UV_BIN" venv "$VENV_DIR" --python "$PY_VERSION" --clear >/dev/null \
+  || die "Не удалось создать venv. Конфиг Cline не изменён."
+"$UV_BIN" pip install --python "$VENV_DIR" "git+$REPO_URL@$TARGET_REF#subdirectory=$SUBDIR" \
+  || die "Не удалось установить пакет (проверьте доступ к github.com / pypi.org и VPN). Конфиг Cline не изменён."
+[ -x "$SERVER_BIN" ] || die "Пакет установлен, но $SERVER_BIN не найден. Возможно, изменился entry point в pyproject.toml."
+printf '%s\n' "$TARGET_REF" > "$REF_FILE"
+ok "Пакет установлен: $SERVER_BIN"
+
+cat > "$LAUNCHER" <<LAUNCHEOF
+#!/usr/bin/env bash
+# Сгенерировано setup.sh (шаг 4b): самообновление по SHA ветки master.
+BRANCH='$BRANCH'
+REPO_URL='$REPO_URL'
+SUBDIR='$SUBDIR'
+UV_BIN='$UV_BIN'
+VENV_DIR='$VENV_DIR'
+REF_FILE='$REF_FILE'
+SERVER_BIN='$SERVER_BIN'
+PY_VERSION='$PY_VERSION'
+
+export UV_SYSTEM_CERTS=1 UV_NATIVE_TLS=1
+
+# 1) SHA ветки (короткий таймаут — не вешать старт сервера).
+target_ref="\$(GIT_TERMINAL_PROMPT=0 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=3 \\
+  git ls-remote "\$REPO_URL" "refs/heads/\$BRANCH" 2>/dev/null | awk '{print \$1; exit}')"
+printf '%s' "\$target_ref" | grep -Eq '^[0-9a-f]{40}\$' || target_ref=""
+
+# 2) Переустановить пакет, только если ref изменился или бинарь пропал.
+installed_ref=""
+[ -f "\$REF_FILE" ] && installed_ref="\$(tr -d ' \r\n' < "\$REF_FILE")"
+if [ -n "\$target_ref" ] && { [ "\$target_ref" != "\$installed_ref" ] || [ ! -x "\$SERVER_BIN" ]; }; then
+  [ -d "\$VENV_DIR" ] || "\$UV_BIN" venv "\$VENV_DIR" --python "\$PY_VERSION" >&2 || true
+  if "\$UV_BIN" pip install --python "\$VENV_DIR" "git+\$REPO_URL@\$target_ref#subdirectory=\$SUBDIR" >&2; then
+    printf '%s\n' "\$target_ref" > "\$REF_FILE"
+  fi
+fi
+
+# 3) Запуск. Креды сервер читает сам (см. config.py).
+exec "\$SERVER_BIN" "\$@"
+LAUNCHEOF
+chmod +x "$LAUNCHER"
+ok "Лаунчер сгенерирован: $LAUNCHER"
+
 # --- 5. Обновить конфиг Cline идемпотентно ----------------------------------
 mkdir -p "$CLINE_DIR"
 [ -f "$CLINE_CFG" ] || printf '{\n  "mcpServers": {}\n}\n' > "$CLINE_CFG"
@@ -231,8 +296,7 @@ PY=""
 for p in python3 python; do command -v "$p" >/dev/null 2>&1 && { PY="$p"; break; }; done
 [ -n "$PY" ] || die "Не найден python3 — он нужен для безопасного обновления JSON-конфига Cline."
 
-CLINE_CFG="$CLINE_CFG" SERVER_KEY="$SERVER_KEY" UVX_BIN="$UVX_BIN" \
-GIT_URL="$GIT_URL" MCP_ENTRY="$MCP_ENTRY" \
+CLINE_CFG="$CLINE_CFG" SERVER_KEY="$SERVER_KEY" LAUNCHER="$LAUNCHER" \
 "$PY" - <<'PYEOF'
 import json, os, sys
 
@@ -259,8 +323,8 @@ if not isinstance(servers, dict):
 #   старая: {"command": ..., "args": [...], "transportType": "stdio", ...}
 # Подстраиваемся под то, что уже лежит в файле у соседних серверов, иначе Cline
 # проигнорирует запись. Если соседей нет — пишем новую схему.
-_command = os.environ["UVX_BIN"]
-_args = ["--from", os.environ["GIT_URL"], os.environ["MCP_ENTRY"]]
+_command = os.environ["LAUNCHER"]
+_args = []
 
 
 def uses_new_schema(cfg):
@@ -304,25 +368,24 @@ try:
     os.chmod(path, 0o600)
 except OSError:
     pass
-print("  секция '%s' обновлена (командой %s)" % (key, os.environ["UVX_BIN"]))
+print("  секция '%s' обновлена (командой %s)" % (key, os.environ["LAUNCHER"]))
 PYEOF
 
 # --- 6. Проверочный вызов ---------------------------------------------------
-info "Проверяю, что пакет ставится и запускается (uvx ... --help)..."
-if "$UVX_BIN" --from "$GIT_URL" "$MCP_ENTRY" --help >/dev/null 2>&1; then
+info "Проверяю, что сервер запускается (--help)..."
+if "$SERVER_BIN" --help >/dev/null 2>&1; then
   ok "Проверочный запуск успешен."
 else
   # --help может не поддерживаться сервером; это не критично для stdio MCP.
   warn "Проверочный запуск завершился с ненулевым кодом."
   warn "Это не всегда ошибка (сервер может не поддерживать --help). Если Cline не подключится:"
-  warn "  - проверьте доступ в интернет / к github.com (прокси);"
   warn "  - проверьте, что VPN подключён (для доступа к EWS)."
 fi
 
 # --- 7. Итог ----------------------------------------------------------------
 echo
 ok "== Готово =="
-printf '%s\n' "  uv/uvx:     $UVX_BIN"
+printf '%s\n' "  Лаунчер:    $LAUNCHER (ref: ${TARGET_REF:0:12})"
 printf '%s\n' "  Конфиг:     $ENV_FILE"
 printf '%s\n' "  Cline:      $CLINE_CFG (сервер '$SERVER_KEY')"
 echo

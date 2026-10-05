@@ -29,9 +29,7 @@ $RepoUrl    = 'https://github.com/ShDA009/mcp.git'
 $SubDir     = 'outlook-mcp'
 $McpEntry   = 'ews-mcp-server'
 $ServerKey  = 'outlook-mcp'
-$VersionsRawUrl = 'https://raw.githubusercontent.com/ShDA009/mcp/master/mcp-versions.txt'
-# Fallback-ref, если mcp-versions.txt недоступен при самой первой установке.
-$FallbackRef = 'master'
+$Branch     = 'master'   # в master попадает только проверенный код
 
 function Write-Info($m) { Write-Host $m -ForegroundColor Cyan }
 function Write-Ok  ($m) { Write-Host $m -ForegroundColor Green }
@@ -201,17 +199,16 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Die 'Конфиг Cline не изменён. Установите git и запустите скрипт снова.'
 }
 
-# Ref берём из mcp-versions.txt (как и остальные серверы), с fallback.
-$TargetRef = $FallbackRef
+# Ставим ровно SHA ветки (git ls-remote), чтобы .installed-ref соответствовал
+# содержимому. Лаунчер при старте сверяет SHA и обновляет пакет при расхождении.
+$TargetRef = $Branch
 try {
-    $versionsText = (Invoke-WebRequest -Uri $VersionsRawUrl -TimeoutSec 10 -UseBasicParsing).Content
-    $refLine = $versionsText -split "`n" | Where-Object { $_ -match '^OUTLOOK_REF=' } | Select-Object -Last 1
-    if ($refLine) {
-        $refValue = ($refLine -replace '^OUTLOOK_REF=', '').Trim().Trim('"')
-        if ($refValue -match '^[A-Za-z0-9._/-]+$') { $TargetRef = $refValue }
-    }
-} catch {
-    Write-Warn2 "Не удалось получить mcp-versions.txt, использую '$FallbackRef'."
+    $env:GIT_TERMINAL_PROMPT = '0'
+    $lsLine = (& git ls-remote $RepoUrl "refs/heads/$Branch" 2>$null | Select-Object -First 1)
+    if ($lsLine -match '^([0-9a-f]{40})\s') { $TargetRef = $Matches[1] }
+} catch { }
+if ($TargetRef -eq $Branch) {
+    Write-Warn2 "Не удалось получить SHA ветки $Branch, ставлю по имени ветки."
 }
 
 $PkgSpec = "git+$RepoUrl@$TargetRef#subdirectory=$SubDir"
@@ -269,9 +266,10 @@ if (-not (Test-Path $ServerExe)) {
 Write-Ok "Пакет установлен: $ServerExe"
 
 # --- 6. Сгенерировать лаунчер с самообновлением -----------------------------
-# Лаунчер при старте сверяет OUTLOOK_REF из репо с .installed-ref и
-# переустанавливает пакет ТОЛЬКО при расхождении. Обычный старт = запуск exe,
-# без резолва зависимостей и без обращения к git.
+# Лаунчер при старте узнаёт SHA ветки master (git ls-remote), сверяет с
+# .installed-ref и переустанавливает пакет ТОЛЬКО при расхождении. Нет сети —
+# запускается установленная версия. Обычный старт = запуск exe, без резолва
+# зависимостей.
 # launch.cmd — тонкая обёртка: Cline вызывает `command` как исполняемый файл
 # и не интерпретирует .ps1 напрямую.
 $launchScriptLines = @(
@@ -282,21 +280,20 @@ $launchScriptLines = @(
     "`$ConfDir = '$ConfDir'"
     "`$VenvDir = '$VenvDir'"
     "`$RefFile = '$RefFile'"
-    "`$RawUrl = '$VersionsRawUrl'"
+    "`$Branch = '$Branch'"
     "`$RepoUrl = '$RepoUrl'"
     "`$SubDir = '$SubDir'"
     "`$UvBin = '$UvBin'"
     "`$ServerExe = '$ServerExe'"
     ''
-    '# 1) Узнать целевой ref (короткий таймаут — не вешать старт сервера).'
+    '# 1) SHA ветки (короткий таймаут — не вешать старт сервера).'
     '$targetRef = $null'
     'try {'
-    '    $text = (Invoke-WebRequest -Uri $RawUrl -TimeoutSec 3 -UseBasicParsing).Content'
-    '    $line = $text -split "`n" | Where-Object { $_ -match ''^OUTLOOK_REF='' } | Select-Object -Last 1'
-    '    if ($line) {'
-    '        $v = ($line -replace ''^OUTLOOK_REF='', '''').Trim().Trim(''"'')'
-    '        if ($v -match ''^[A-Za-z0-9._/-]+$'') { $targetRef = $v }'
-    '    }'
+    '    $env:GIT_TERMINAL_PROMPT = ''0'''
+    '    $env:GIT_HTTP_LOW_SPEED_LIMIT = ''1000'''
+    '    $env:GIT_HTTP_LOW_SPEED_TIME = ''3'''
+    '    $ls = (& git ls-remote $RepoUrl "refs/heads/$Branch" 2>$null | Select-Object -First 1)'
+    '    if ($ls -match ''^([0-9a-f]{40})\s'') { $targetRef = $Matches[1] }'
     '} catch { }'
     ''
     '# 2) Переустановить пакет, только если ref изменился или venv пропал.'

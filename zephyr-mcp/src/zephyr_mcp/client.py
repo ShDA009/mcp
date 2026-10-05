@@ -1,5 +1,6 @@
 import random
 import re
+import ssl
 import time
 from typing import Any
 
@@ -34,7 +35,7 @@ class ZephyrClient:
             },
             timeout=15.0,
             follow_redirects=False,
-            verify=cfg.ca_bundle or True,
+            verify=_build_verify(cfg.ca_bundle),
         )
 
     def list_executions(self, test_run_key: str) -> Any:
@@ -356,6 +357,22 @@ class ZephyrClient:
             return _handle_response(response, path)
 
         raise ZephyrError("rate limited by Zephyr, retries exhausted")
+
+
+def _build_verify(ca_bundle: str) -> bool | ssl.SSLContext:
+    """Build the httpx `verify` value for the corporate CA bundle.
+
+    Python 3.13+ enables ssl.VERIFY_X509_STRICT by default, and OpenSSL 3.5
+    then rejects certificates that lack the Authority Key Identifier
+    extension (an RFC 5280 violation common in internal PKIs) with
+    "Missing Authority Key Identifier". Keep normal chain and hostname
+    verification, drop only the strict RFC check so the corporate CA works.
+    """
+    if not ca_bundle:
+        return True
+    context = ssl.create_default_context(cafile=ca_bundle)
+    context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return context
 
 
 def _filter_by_folder_prefix(items: list[dict], folder: str | None) -> list[dict]:

@@ -6,11 +6,26 @@
 
 Подробности по своим серверам: [outlook-mcp](outlook-mcp/CHANGELOG.md).
 
-## 2026-10-05 — zephyr-mcp
+## 2026-10-05 — zephyr-mcp 0.4.2
 
 - `ZEPHYR_CA_BUNDLE` — путь к PEM с корпоративным CA для проверки TLS-сертификата
   Jira (проверка не отключается). В README добавлена инструкция, как получить
   сертификат из браузера.
+- Фикс: при заданном `ZEPHYR_CA_BUNDLE` SSL-контекст строится без флага
+  `VERIFY_X509_STRICT` (осознанное ослабление: строгая RFC 5280-проверка
+  отключается для всего бандла). Python 3.13+ включает его по умолчанию, и OpenSSL 3.5
+  отвергал сертификаты корпоративного УЦ без расширения Authority Key
+  Identifier (`Missing Authority Key Identifier`), хотя обычная проверка цепочки
+  и имени хоста остаётся включённой.
+- `setup.sh` (macOS/Linux) переведён с `uvx --from git+...` на venv и лаунчер
+  `~/.config/zephyr-mcp/launch.sh`, как на Windows. Лаунчеры (`setup.sh` и
+  `setup.ps1`) при старте сверяют SHA ветки `master` (`git ls-remote`) с
+  установленным и переустанавливают пакет при расхождении — так сотрудники
+  получают обновления без ручных шагов. Существующим пользователям нужно один
+  раз перезапустить установщик.
+- То же для `outlook-mcp`: `setup.sh` переведён на venv и лаунчер, оба
+  `setup.ps1` сверяют SHA `master` вместо `OUTLOOK_REF`. Ключи `OUTLOOK_REF` и
+  `ZEPHYR_REF` убраны из `mcp-versions.txt`.
 
 ## 2026-10-02 — grafana-mcp
 
