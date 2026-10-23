@@ -29,6 +29,9 @@ $FallbackPostgresSpec = 'postgres-mcp>=0.3,<0.4'
 # готовые колёса только до cp313, и на системе с Python 3.14 uvx иначе уходит в
 # сборку из исходников и падает. postgres-mcp требует >=3.12.
 $PythonPin = '3.13'
+# postgres-mcp 0.3.0 требует pglast==7.2.0, которого больше нет на PyPI
+# (есть 7.20/7.21) — подменяем через uv override.
+$PglastOverride = 'pglast==7.20'
 # Верхняя граница для MCP SDK: upstream объявил "mcp[cli]>=1.5.0" без верхней
 # границы, но в mcp 2.0 удалён модуль mcp.server.fastmcp — сервер падает с
 # ModuleNotFoundError на импорте. Держим SDK на ветке 1.x.
@@ -111,6 +114,7 @@ Write-Ok "Конфиг Cline: $ClineCfg"
 $ConfDir = Join-Path $env:USERPROFILE '.postgres-mcp'
 $EnvFile = Join-Path $ConfDir '.env'
 $LaunchScript = Join-Path $ConfDir 'launch.ps1'
+$OverridesFile = Join-Path $ConfDir 'overrides.txt'
 $LaunchFile = Join-Path $ConfDir 'launch.cmd'
 if (-not (Test-Path $ConfDir)) { New-Item -ItemType Directory -Path $ConfDir -Force | Out-Null }
 
@@ -280,9 +284,10 @@ $launchScriptLines = @(
     '# Интерпретатор пинуется явно: pglast==7.2.0 публикует колёса только до'
     '# cp313, на Python 3.14 uvx иначе пытается собрать её из исходников и падает.'
     '# mcp[cli]<2 — в mcp 2.0 удалён mcp.server.fastmcp, сервер падает на импорте.'
-    "& '$UvxBin' --python '$PythonPin' --with '$McpSdkConstraint' --from `$PostgresSpec postgres-mcp `"--access-mode=`$AccessMode`" @args"
+    "& '$UvxBin' --python '$PythonPin' --with '$McpSdkConstraint' --overrides '$OverridesFile' --from `$PostgresSpec postgres-mcp `"--access-mode=`$AccessMode`" @args"
     'exit $LASTEXITCODE'
 )
+[System.IO.File]::WriteAllText($OverridesFile, "$PglastOverride`n", $utf8)
 [System.IO.File]::WriteAllText($LaunchScript, ($launchScriptLines -join "`r`n") + "`r`n", $utf8)
 
 $launchCmdLines = @(

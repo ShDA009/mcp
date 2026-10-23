@@ -35,6 +35,9 @@ FALLBACK_POSTGRES_SPEC="postgres-mcp>=0.3,<0.4"
 # готовые колёса только до cp313, и на системе с Python 3.14 uvx иначе уходит в
 # сборку из исходников и падает. postgres-mcp требует >=3.12.
 PYTHON_PIN="3.13"
+# postgres-mcp 0.3.0 требует pglast==7.2.0, которого больше нет на PyPI
+# (есть 7.20/7.21) — подменяем через uv override.
+PGLAST_OVERRIDE="pglast==7.20"
 # Верхняя граница для MCP SDK: upstream объявил "mcp[cli]>=1.5.0" без верхней
 # границы, но в mcp 2.0 удалён модуль mcp.server.fastmcp — сервер падает с
 # ModuleNotFoundError на импорте. Держим SDK на ветке 1.x.
@@ -315,6 +318,7 @@ ok "Настройки сохранены в $ENV_FILE (chmod 600)."
 # парсится через `.` (source), но перед этим проверяется регуляркой на
 # допустимые символы — если что-то не так, используется fallback.
 umask 077
+printf '%s\n' "$PGLAST_OVERRIDE" > "$CONF_DIR/overrides.txt"
 TMP_LAUNCH="$(mktemp "${CONF_DIR}/launch.sh.XXXXXX")"
 cat > "$TMP_LAUNCH" <<LAUNCHEOF
 #!/usr/bin/env bash
@@ -362,7 +366,7 @@ esac
 # исходников (нужен make + компилятор) и падает. uv скачает 3.13 сам.
 # mcp[cli]<2 — upstream объявил зависимость как ">=1.5.0" без верхней границы,
 # а в mcp 2.0 модуль mcp.server.fastmcp удалён, и сервер падает на импорте.
-exec "$UVX_BIN" --python "$PYTHON_PIN" --with "$MCP_SDK_CONSTRAINT" --from "\$POSTGRES_SPEC" postgres-mcp --access-mode="\$ACCESS_MODE" "\$@"
+exec "$UVX_BIN" --python "$PYTHON_PIN" --with "$MCP_SDK_CONSTRAINT" --overrides "$CONF_DIR/overrides.txt" --from "\$POSTGRES_SPEC" postgres-mcp --access-mode="\$ACCESS_MODE" "\$@"
 LAUNCHEOF
 mv -f "$TMP_LAUNCH" "$LAUNCH_FILE"
 chmod 700 "$LAUNCH_FILE"
